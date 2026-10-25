@@ -1,0 +1,438 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>InkShift Settings</title>
+    <link rel="stylesheet" href="../shared/tokens.css" />
+    <link rel="stylesheet" href="./popup.css" />
+  </head>
+  <body>
+    <div id="app" class="popup-container">
+      <!-- Top Persistent Header -->
+      <header class="popup-header">
+        <div class="brand">
+          <span class="logo-dot"></span>
+          <h1>InkShift</h1>
+          <span class="brand-badge">v0.1</span>
+        </div>
+        <div class="header-actions">
+          <span id="backend-status-badge" class="status-indicator">Checking...</span>
+          <button id="refresh-health-btn" class="icon-btn" title="Làm mới kết nối Backend" type="button">
+            <svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/>
+            </svg>
+          </button>
+          <button id="btn-open-settings" class="icon-btn gear-btn" title="Cài đặt & Cấu hình" type="button">
+            <svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="12" r="3"/>
+              <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+            </svg>
+          </button>
+          <button id="btn-close-popup" class="icon-btn close-btn hidden" title="Đóng" type="button">
+            <svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <line x1="18" y1="6" x2="6" y2="18"></line>
+              <line x1="6" y1="6" x2="18" y2="18"></line>
+            </svg>
+          </button>
+        </div>
+      </header>
+
+      <!-- View Slider Container -->
+      <div class="view-slider" id="view-slider">
+        <!-- ============================================== -->
+        <!-- VIEW A: MAIN READING DASHBOARD (Default, Compact) -->
+        <!-- ============================================== -->
+        <main class="popup-view" id="view-main">
+          <!-- Bento Card 1: Active Domain Context -->
+          <div class="bento-card domain-card" id="domain-card">
+            <div class="domain-header">
+              <div class="domain-title-wrap">
+                <span class="domain-dot"></span>
+                <span class="domain-name" id="active-domain-name">Checking...</span>
+              </div>
+              <span class="domain-status-badge status-normal" id="active-domain-badge">...</span>
+            </div>
+            <div class="domain-detail-text" id="active-domain-detail">Đang phân tích trang...</div>
+          </div>
+
+          <!-- Bento Card 2: Master Translation Toggle & Action -->
+          <div class="bento-card action-card">
+            <div class="hero-toggle-row">
+              <div class="toggle-label-wrap">
+                <span class="toggle-primary-text">Hiển thị bản dịch</span>
+                <span class="toggle-shortcut-hint">Phím tắt Alt + Z</span>
+              </div>
+              <label class="custom-switch" for="overlay-visibility-toggle">
+                <input type="checkbox" id="overlay-visibility-toggle" checked />
+                <span class="switch-slider"></span>
+              </label>
+            </div>
+            <button id="rescan-btn" class="primary-btn scan-cta-btn" type="button">
+              <svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/>
+                <path d="M3 3v5h5M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/>
+                <path d="M16 21h5v-5"/>
+              </svg>
+              <span>Quét & Dịch lại trang</span>
+            </button>
+            <div id="rescan-status" class="status-help-text"></div>
+          </div>
+
+          <!-- Bento Card 3: AI Engine & Model Selector -->
+          <div class="bento-card engine-card">
+            <div class="card-section-title">Bộ máy dịch (Translation Engine)</div>
+            
+            <div class="setting-row">
+              <label for="engine-select">Engine</label>
+              <select id="engine-select" class="form-select flex-1">
+                <option value="auto">Tự động (Auto)</option>
+                <option value="local">Local DirectML (Offline)</option>
+                <option value="cloud">Cloud AI Vision</option>
+              </select>
+            </div>
+
+            <div id="provider-container" class="setting-row conditional-item hidden">
+              <label for="provider-select">Provider</label>
+              <select id="provider-select" class="form-select flex-1">
+                <option value="google">Google Gemini</option>
+                <option value="openai">OpenAI</option>
+                <option value="anthropic">Anthropic Claude</option>
+                <option value="custom">Tùy chỉnh (OpenAI-compatible)</option>
+              </select>
+            </div>
+
+            <div id="translator-container" class="setting-row conditional-item hidden">
+              <label for="translator-select">Text OCR</label>
+              <select id="translator-select" class="form-select flex-1">
+                <option value="google-free">Google Translate (Miễn phí)</option>
+                <option value="llm-google">Gemini Text</option>
+                <option value="llm-openai">OpenAI Text</option>
+                <option value="llm-anthropic">Claude Text</option>
+                <option value="llm-custom">Custom LLM Text</option>
+              </select>
+            </div>
+
+            <!-- Dynamic Model Combobox -->
+            <div id="model-container" class="model-picker-wrap conditional-item hidden">
+              <div class="combobox-header">
+                <label for="model-search-input">Model</label>
+                <div class="combobox-header-actions">
+                  <label class="filter-vision-toggle-label" title="Chỉ hiển thị model hỗ trợ Vision">
+                    <input type="checkbox" id="filter-vision-toggle" class="form-checkbox-inline" />
+                    <span>Vision</span>
+                  </label>
+                  <button id="refresh-models-btn" class="icon-btn-inline" title="Làm mới model" type="button">
+                    <svg class="ui-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/>
+                    </svg>
+                  </button>
+                </div>
+              </div>
+              <div class="combobox-wrapper" id="model-combobox">
+                <input
+                  type="text"
+                  id="model-search-input"
+                  class="form-input combobox-input"
+                  placeholder="Chọn hoặc tìm kiếm model..."
+                  autocomplete="off"
+                  spellcheck="false"
+                />
+                <span id="model-loading-indicator" class="combobox-spinner hidden"></span>
+                <div id="model-dropdown-list" class="combobox-dropdown hidden" role="listbox"></div>
+              </div>
+              <div id="model-status-help" class="status-help-text"></div>
+            </div>
+          </div>
+
+          <!-- Bento Card 4: Manga Reading Aesthetics Customizer -->
+          <div class="bento-card aesthetic-card">
+            <div class="card-section-title">Tùy biến hiển thị Manga</div>
+            
+            <div class="setting-row">
+              <label for="font-family-select">Phông chữ</label>
+              <select id="font-family-select" class="form-select flex-1">
+                <option value="itim">Manga Comic (Itim)</option>
+                <option value="bangers">Hành động / Hét to (Bangers)</option>
+                <option value="patrick-hand">Viết tay / Tâm sự (Patrick Hand)</option>
+                <option value="anime-ace-3">Manga Scanlation (Anime Ace 3)</option>
+                <option value="system-ui">Hệ thống (System Sans-Serif)</option>
+              </select>
+            </div>
+
+            <div class="setting-row">
+              <label for="overlay-color-select">Màu nền</label>
+              <div class="color-picker-row flex-1">
+                <select id="overlay-color-select" class="form-select flex-1">
+                  <option value="#faf5f0">Giấy ấm (Warm Ivory)</option>
+                  <option value="#ffffff">Trắng tinh (Pure White)</option>
+                  <option value="#1c1917">Đen OLED (Obsidian Dark)</option>
+                  <option value="#f4ecd8">Giấy cũ (Sepia)</option>
+                  <option value="custom">Tùy chọn...</option>
+                </select>
+                <input
+                  type="color"
+                  id="overlay-color-picker"
+                  class="form-color-picker"
+                  value="#faf5f0"
+                  title="Chọn mã màu tùy thích"
+                />
+              </div>
+            </div>
+
+            <div class="slider-row">
+              <div class="slider-header">
+                <label for="opacity-slider">Độ trong suốt bóng thoại</label>
+                <span id="opacity-val-label" class="slider-value">88%</span>
+              </div>
+              <input
+                type="range"
+                id="opacity-slider"
+                class="form-range"
+                min="10"
+                max="100"
+                step="5"
+                value="88"
+              />
+            </div>
+
+            <div id="source-lang-container" class="setting-row">
+              <label for="source-lang-select">Ngôn ngữ gốc</label>
+              <select id="source-lang-select" class="form-select flex-1">
+                <option value="auto">Tự động (Auto-detect)</option>
+                <option value="ja">Tiếng Nhật (Manga)</option>
+                <option value="en">Tiếng Anh (Comic)</option>
+                <option value="ko">Tiếng Hàn (Manhwa)</option>
+                <option value="zh">Tiếng Trung (Manhua)</option>
+              </select>
+            </div>
+
+            <div class="mascot-toggle-row">
+              <div class="toggle-label-wrap">
+                <span class="toggle-title">Linh vật đồng hành (Mascot)</span>
+                <span class="toggle-hint">Biểu cảm &amp; trợ lý HUD trên màn hình đọc (Phím tắt Alt + M)</span>
+              </div>
+              <label class="custom-switch" for="mascot-quick-toggle">
+                <input type="checkbox" id="mascot-quick-toggle" checked />
+                <span class="switch-slider"></span>
+              </label>
+            </div>
+          </div>
+        </main>
+
+        <!-- ============================================== -->
+        <!-- VIEW B: SETTINGS & CONFIGURATION DRAWER        -->
+        <!-- ============================================== -->
+        <aside class="popup-view" id="view-settings">
+          <div class="view-header">
+            <button id="btn-close-settings" class="back-nav-btn" type="button">
+              <svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M19 12H5M12 19l-7-7 7-7"/>
+              </svg>
+              <span>Quay lại</span>
+            </button>
+            <div class="view-title">Cài đặt & Cấu hình</div>
+          </div>
+
+          <div class="settings-scroll-content">
+            <!-- Domain Policy Management Section -->
+            <div class="settings-group">
+              <div class="group-title">Chế độ trang web này</div>
+              <div class="setting-item">
+                <select id="domain-mode-select" class="form-select full-width">
+                  <option value="auto">Tự động phát hiện (Khuyên dùng)</option>
+                  <option value="whitelist">🟢 Luôn dịch trên domain này (Whitelist)</option>
+                  <option value="blacklist">🔴 Chặn domain này (Blacklist)</option>
+                </select>
+              </div>
+
+              <details class="domain-drawer" id="domain-drawer">
+                <summary class="domain-drawer-summary">
+                  <span>Quản lý Whitelist &amp; Blacklist</span>
+                  <svg class="drawer-chevron" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <polyline points="9 18 15 12 9 6"></polyline>
+                  </svg>
+                </summary>
+                <div class="drawer-content">
+                  <div class="drawer-section">
+                    <div class="drawer-section-header">
+                      <span>Whitelist (Luôn dịch)</span>
+                      <span id="whitelist-count" class="count-pill">0</span>
+                    </div>
+                    <div id="whitelist-tags" class="domain-tags-container"></div>
+                  </div>
+
+                  <div class="drawer-section">
+                    <div class="drawer-section-header">
+                      <span>Blacklist (Chặn dịch)</span>
+                      <span id="blacklist-count" class="count-pill">0</span>
+                    </div>
+                    <div id="blacklist-tags" class="domain-tags-container"></div>
+                  </div>
+
+                  <div class="add-domain-row">
+                    <input
+                      type="text"
+                      id="new-domain-input"
+                      class="form-input flex-1"
+                      placeholder="domain-can-them.com"
+                    />
+                    <select id="new-domain-target" class="form-select">
+                      <option value="blacklist">Blacklist</option>
+                      <option value="whitelist">Whitelist</option>
+                    </select>
+                    <button id="add-domain-btn" class="secondary-btn" type="button">Thêm</button>
+                  </div>
+
+                  <button id="restore-defaults-btn" class="outline-btn" type="button">
+                    Khôi phục danh sách mặc định
+                  </button>
+                </div>
+              </details>
+            </div>
+
+            <!-- API Key & Endpoints Drawer -->
+            <div class="settings-group">
+              <details class="domain-drawer" id="api-key-drawer">
+                <summary class="domain-drawer-summary">
+                  <span>Quản lý API Key &amp; Endpoints</span>
+                  <svg class="drawer-chevron" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <polyline points="9 18 15 12 9 6"></polyline>
+                  </svg>
+                </summary>
+                <div class="drawer-content">
+                  <!-- Google Gemini -->
+                  <div class="drawer-section">
+                    <div class="drawer-section-header">
+                      <span>Google Gemini</span>
+                      <span id="google-key-status" class="count-pill status-pill not-configured">Chưa cấu hình</span>
+                    </div>
+                    <div class="key-input-row">
+                      <input
+                        type="password"
+                        id="google-key-input"
+                        class="form-input flex-1"
+                        placeholder="Nhập Gemini API Key (AIza...)"
+                        autocomplete="off"
+                      />
+                      <button id="toggle-google-key-btn" class="icon-btn-inline" type="button" title="Ẩn/Hiện Key">
+                        <svg class="ui-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+                      </button>
+                      <button id="save-google-key-btn" class="secondary-btn" type="button">Lưu</button>
+                    </div>
+                  </div>
+
+                  <!-- OpenAI -->
+                  <div class="drawer-section">
+                    <div class="drawer-section-header">
+                      <span>OpenAI</span>
+                      <span id="openai-key-status" class="count-pill status-pill not-configured">Chưa cấu hình</span>
+                    </div>
+                    <div class="key-input-row">
+                      <input
+                        type="password"
+                        id="openai-key-input"
+                        class="form-input flex-1"
+                        placeholder="Nhập OpenAI API Key (sk-...)"
+                        autocomplete="off"
+                      />
+                      <button id="toggle-openai-key-btn" class="icon-btn-inline" type="button" title="Ẩn/Hiện Key">
+                        <svg class="ui-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+                      </button>
+                      <button id="save-openai-key-btn" class="secondary-btn" type="button">Lưu</button>
+                    </div>
+                  </div>
+
+                  <!-- Anthropic Claude -->
+                  <div class="drawer-section">
+                    <div class="drawer-section-header">
+                      <span>Anthropic Claude</span>
+                      <span id="anthropic-key-status" class="count-pill status-pill not-configured">Chưa cấu hình</span>
+                    </div>
+                    <div class="key-input-row">
+                      <input
+                        type="password"
+                        id="anthropic-key-input"
+                        class="form-input flex-1"
+                        placeholder="Nhập Anthropic API Key (sk-ant-...)"
+                        autocomplete="off"
+                      />
+                      <button id="toggle-anthropic-key-btn" class="icon-btn-inline" type="button" title="Ẩn/Hiện Key">
+                        <svg class="ui-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+                      </button>
+                      <button id="save-anthropic-key-btn" class="secondary-btn" type="button">Lưu</button>
+                    </div>
+                  </div>
+
+                  <!-- Custom OpenAI-Compatible -->
+                  <div class="drawer-section">
+                    <div class="drawer-section-header">
+                      <span>Tùy chỉnh (OpenAI-compatible)</span>
+                      <span id="custom-key-status" class="count-pill status-pill not-configured">Chưa cấu hình</span>
+                    </div>
+                    <div class="endpoint-input-row">
+                      <input
+                        type="text"
+                        id="custom-endpoint-input"
+                        class="form-input flex-1"
+                        placeholder="Base URL (vd: https://api.deepseek.com/v1)"
+                        autocomplete="off"
+                      />
+                    </div>
+                    <div class="key-input-row">
+                      <input
+                        type="password"
+                        id="custom-key-input"
+                        class="form-input flex-1"
+                        placeholder="API Key (nếu có)"
+                        autocomplete="off"
+                      />
+                      <button id="toggle-custom-key-btn" class="icon-btn-inline" type="button" title="Ẩn/Hiện Key">
+                        <svg class="ui-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+                      </button>
+                      <button id="save-custom-key-btn" class="secondary-btn" type="button">Lưu</button>
+                    </div>
+                  </div>
+
+                  <div id="drawer-save-feedback" class="status-help-text"></div>
+                </div>
+              </details>
+            </div>
+
+            <!-- Prefetch Engine Controls -->
+            <div class="settings-group">
+              <div class="group-title">Tối ưu Tốc độ & Đọc trước (Prefetch)</div>
+              <div class="setting-item toggle-row">
+                <label for="prefetch-toggle">Dịch trước các trang tiếp theo</label>
+                <input type="checkbox" id="prefetch-toggle" class="form-checkbox" checked />
+              </div>
+              <div id="prefetch-depth-container" class="setting-item conditional-item">
+                <label for="prefetch-depth-select">Số lượng trang dịch trước</label>
+                <select id="prefetch-depth-select" class="form-select full-width">
+                  <option value="3">3 trang (Khuyên dùng)</option>
+                  <option value="5">5 trang</option>
+                  <option value="10">10 trang</option>
+                  <option value="all">Toàn bộ chapter</option>
+                </select>
+              </div>
+            </div>
+
+            <!-- Developer & Diagnostics -->
+            <div class="settings-group">
+              <div class="group-title">Linh vật &amp; Công cụ</div>
+              <div class="setting-item toggle-row">
+                <label for="mascot-enabled-toggle">Bật linh vật đồng hành (Mascot)</label>
+                <input type="checkbox" id="mascot-enabled-toggle" class="form-checkbox" checked />
+              </div>
+              <div class="setting-item toggle-row">
+                <label for="debug-geometry-toggle">Visual Debug Overlays (Khung YOLO)</label>
+                <input type="checkbox" id="debug-geometry-toggle" class="form-checkbox" />
+              </div>
+            </div>
+          </div>
+        </aside>
+      </div>
+    </div>
+    <script type="module" src="./popup.ts"></script>
+  </body>
+</html>

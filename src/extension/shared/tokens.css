@@ -1,0 +1,188 @@
+/**
+ * InkShift Design System: Warm Obsidian & Mascot Terracotta
+ * Source of Truth: design-system/inkshift/MASTER.md
+ * 
+ * Strict Three-Layer Token Architecture:
+ * Layer 1: Primitives (raw colors, base spatial units, radii, transitions)
+ * Layer 2: Semantics (purpose aliases: surface, text, brand, feedback, reading bubbles)
+ * Layer 3: Components (component-scoped bindings: buttons, cards, inputs, switches, hud)
+ */
+
+:root,
+:host {
+  /* ========================================================================
+     LAYER 1: PRIMITIVES
+     ======================================================================== */
+  
+  /* Palette: Warm Stone & Obsidian Neutrals */
+  --primitive-stone-950: #0C0A09;
+  --primitive-stone-900: #12100E; /* Deep Warm Obsidian */
+  --primitive-stone-850: #1C1917; /* Warm Stone 900 Bento Card */
+  --primitive-stone-800: #231F1C; /* Elevated Surface / Card Hover */
+  --primitive-stone-750: #2A2421; /* Inner Well / Input Background */
+  --primitive-stone-700: #2E2825; /* Subtle Divider & Border */
+  --primitive-stone-500: #78716C; /* Dim Text / Muted Hints */
+  --primitive-stone-400: #A8A29E; /* Secondary Text / Labels */
+  --primitive-stone-100: #FAF5F0; /* Warm Ivory Primary Text */
+  --primitive-stone-50:  #FFFFFF; /* Pure White */
+
+  /* Palette: Mascot Terracotta Brand (Signature Anthropic #DE886D) */
+  --primitive-terracotta-300: #F3B3A0;
+  --primitive-terracotta-400: #E89D84; /* Soft Hover Glow */
+  --primitive-terracotta-500: #DE886D; /* Exact Mascot Body Color */
+  --primitive-terracotta-600: #C77359; /* Active / Pressed */
+
+  /* Palette: Semantic Feedback Primitives */
+  --primitive-emerald-500: #10B981;
+  --primitive-amber-500:   #F59E0B;
+  --primitive-rose-500:    #E11D48;
+  --primitive-sky-500:     #0EA5E9;
+
+  /* Spacing Scale (8px Base - Density 8/10 Compact Dashboard) */
+  --primitive-space-2xs: 2px;
+  --primitive-space-xs:  4px;
+  --primitive-space-sm:  6px;
+  --primitive-space-md:  8px;
+  --primitive-space-lg:  12px;
+  --primitive-space-xl:  16px;
+  --primitive-space-2xl: 24px;
+  --primitive-space-3xl: 32px;
+
+  /* Corner Radii */
+  --primitive-radius-xs:   4px;
+  --primitive-radius-sm:   6px;
+  --primitive-radius-md:   10px;
+  --primitive-radius-lg:   14px;
+  --primitive-radius-full: 9999px;
+
+  /* Transitions */
+  --primitive-ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --primitive-duration-fast:   150ms;
+  --primitive-duration-normal: 220ms;
+  --primitive-duration-slow:   320ms;
+
+  /* ========================================================================
+     LAYER 2: SEMANTICS (Purpose Aliases & Backward Compatibility)
+     ======================================================================== */
+
+  /* Surfaces & Canvas */
+  --inkshift-bg:            var(--primitive-stone-900);
+  --inkshift-card:          var(--primitive-stone-850);
+  --inkshift-card-hover:    var(--primitive-stone-800);
+  --inkshift-muted-surface: var(--primitive-stone-750);
+
+  /* Typography */
+  --inkshift-text-primary:   var(--primitive-stone-100);
+  --inkshift-text-secondary: var(--primitive-stone-400);
+  --inkshift-text-dim:       var(--primitive-stone-500);
+  --inkshift-text-inverse:   var(--primitive-stone-900);
+
+  /* Brand Accents */
+  --inkshift-brand:       var(--primitive-terracotta-500);
+  --inkshift-brand-hover: var(--primitive-terracotta-400);
+  --inkshift-brand-muted: rgba(222, 136, 109, 0.15);
+  --inkshift-brand-glow:  rgba(222, 136, 109, 0.28);
+
+  /* Borders & Dividers */
+  --inkshift-border-subtle: var(--primitive-stone-700);
+  --inkshift-border-brand:  rgba(222, 136, 109, 0.35);
+
+  /* Feedback */
+  --inkshift-success: var(--primitive-emerald-500);
+  --inkshift-warning: var(--primitive-amber-500);
+  --inkshift-danger:  var(--primitive-rose-500);
+  --inkshift-info:    var(--primitive-sky-500);
+
+  /* Manga Reading Overlays */
+  --inkshift-manga-bubble-light: var(--primitive-stone-100);
+  --inkshift-manga-bubble-dark:  var(--primitive-stone-850);
+  --inkshift-manga-text-light:   var(--primitive-stone-900);
+  --inkshift-manga-text-dark:    var(--primitive-stone-100);
+  --inkshift-font-family: 'Itim', cursive, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+
+  /* Spacing Scale Aliases */
+  --space-2xs: var(--primitive-space-2xs);
+  --space-xs:  var(--primitive-space-xs);
+  --space-sm:  var(--primitive-space-sm);
+  --space-md:  var(--primitive-space-md);
+  --space-lg:  var(--primitive-space-lg);
+  --space-xl:  var(--primitive-space-xl);
+  --space-2xl: var(--primitive-space-2xl);
+
+  /* Radii Aliases */
+  --radius-xs:   var(--primitive-radius-xs);
+  --radius-sm:   var(--primitive-radius-sm);
+  --radius-md:   var(--primitive-radius-md);
+  --radius-lg:   var(--primitive-radius-lg);
+  --radius-full: var(--primitive-radius-full);
+
+  /* Shadows */
+  --shadow-card:  0 4px 12px rgba(0, 0, 0, 0.45);
+  --shadow-glow:  0 0 16px rgba(222, 136, 109, 0.2);
+  --shadow-modal: 0 16px 36px rgba(0, 0, 0, 0.65), 0 0 24px rgba(222, 136, 109, 0.15);
+
+  /* Transition Aliases */
+  --transition-fast:   var(--primitive-duration-fast) var(--primitive-ease-out);
+  --transition-normal: var(--primitive-duration-normal) var(--primitive-ease-out);
+  --transition-slow:   var(--primitive-duration-slow) var(--primitive-ease-out);
+
+  /* ========================================================================
+     LAYER 3: COMPONENT TOKENS
+     ======================================================================== */
+
+  /* Buttons */
+  --btn-primary-bg:          var(--inkshift-brand);
+  --btn-primary-bg-hover:    var(--inkshift-brand-hover);
+  --btn-primary-text:        var(--inkshift-text-inverse);
+  --btn-primary-shadow:      0 2px 8px rgba(222, 136, 109, 0.35);
+  --btn-secondary-bg:        var(--inkshift-muted-surface);
+  --btn-secondary-bg-hover:  var(--inkshift-card-hover);
+  --btn-secondary-border:    var(--inkshift-border-subtle);
+  --btn-secondary-text:      var(--inkshift-text-primary);
+  --btn-icon-size:           28px;
+  --btn-icon-radius:         var(--radius-sm);
+
+  /* Form Inputs & Selects */
+  --input-bg:           var(--inkshift-muted-surface);
+  --input-bg-focus:     var(--inkshift-card);
+  --input-border:       var(--inkshift-border-subtle);
+  --input-border-focus: var(--inkshift-brand);
+  --input-ring:         var(--inkshift-brand-glow);
+  --input-text:         var(--inkshift-text-primary);
+  --input-placeholder:  var(--inkshift-text-dim);
+  --input-radius:       var(--radius-sm);
+  --input-pad-y:        var(--space-sm);
+  --input-pad-x:        var(--space-md);
+
+  /* Bento Cards */
+  --bento-bg:         var(--inkshift-card);
+  --bento-bg-hover:   var(--inkshift-card-hover);
+  --bento-border:     var(--inkshift-border-subtle);
+  --bento-radius:     var(--radius-md);
+  --bento-pad:        var(--space-lg);
+  --bento-well-bg:    var(--inkshift-muted-surface);
+
+  /* Toggle Switch */
+  --toggle-width:       38px;
+  --toggle-height:      20px;
+  --toggle-track-off:   var(--inkshift-muted-surface);
+  --toggle-track-on:    var(--inkshift-brand);
+  --toggle-thumb:       var(--primitive-stone-100);
+  --toggle-thumb-size:  16px;
+
+  /* Status Badges */
+  --badge-online-bg:      rgba(16, 185, 129, 0.12);
+  --badge-online-text:    var(--inkshift-success);
+  --badge-online-border:  rgba(16, 185, 129, 0.3);
+  --badge-offline-bg:     rgba(225, 29, 72, 0.12);
+  --badge-offline-text:   var(--inkshift-danger);
+  --badge-offline-border: rgba(225, 29, 72, 0.3);
+  --badge-radius:         var(--radius-full);
+
+  /* In-Page Mascot HUD */
+  --hud-bg:             var(--inkshift-bg);
+  --hud-border:         var(--inkshift-border-brand);
+  --hud-shadow:         var(--shadow-modal);
+  --hud-radius:         var(--radius-lg);
+  --hud-backdrop-blur:  blur(14px);
+}

@@ -1,0 +1,42 @@
+{
+  "manifest_version": 3,
+  "name": "InkShift — Manga Translation Overlay",
+  "version": "0.1.0",
+  "description": "Instant in-page Vietnamese translation overlays for manga readers powered by local & cloud AI vision.",
+  "action": {
+    "default_popup": "popup/popup.html",
+    "default_title": "InkShift Settings"
+  },
+  "background": {
+    "service_worker": "background/service_worker.js",
+    "type": "module"
+  },
+  "permissions": [
+    "storage",
+    "webNavigation"
+  ],
+  "host_permissions": [
+    "http://127.0.0.1:8000/*",
+    "http://localhost:8000/*",
+    "<all_urls>"
+  ],
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content/content_script.js"],
+      "run_at": "document_idle",
+      "all_frames": false
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "assets/fonts/*",
+        "assets/mascot/*",
+        "popup/*",
+        "chunks/*"
+      ],
+      "matches": ["<all_urls>"]
+    }
+  ]
+}
