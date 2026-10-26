@@ -116,6 +116,12 @@ if exist "dist\manifest.json" (
 )
 
 :TRY_UNPACK_ZIP
+if exist "inkshift-extension.zip" goto :DO_UNPACK
+
+echo [InkShift] Checking GitHub Releases for pre-built extension package...
+powershell -NoProfile -Command "try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; (New-Object Net.WebClient).DownloadFile('https://github.com/thailong2103/ink-shift/releases/latest/download/inkshift-extension.zip', 'inkshift-extension.zip'); exit 0 } catch { exit 1 }" >nul 2>&1
+
+:DO_UNPACK
 if exist "inkshift-extension.zip" (
     echo [InkShift] Pre-built package inkshift-extension.zip detected. Unpacking...
     powershell -NoProfile -Command "Expand-Archive -Path 'inkshift-extension.zip' -DestinationPath 'dist' -Force" >nul 2>&1
@@ -125,9 +131,15 @@ if exist "inkshift-extension.zip" (
     )
 )
 
-echo [WARNING] Node.js is not installed and no pre-built extension zip was found.
+echo [WARNING] Extension bundle not found and Node.js is not installed.
 echo Gateway will run in headless API mode.
-echo To build the browser extension, please install Node.js v18+ from https://nodejs.org/
+echo.
+echo To use the Chrome Extension:
+echo   1. Download 'inkshift-extension.zip' from GitHub Releases:
+echo      https://github.com/thailong2103/ink-shift/releases
+echo      and place it in this repository folder, then restart start.bat.
+echo   2. Or install Node.js v18+ from https://nodejs.org/ to compile it automatically.
+echo.
 
 :CHECK_MODELS
 :: ------------------------------------------------------------
