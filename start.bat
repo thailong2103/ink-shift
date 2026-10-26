@@ -9,126 +9,214 @@ echo   InkShift - Manga Vision Translation Gateway Launcher
 echo ============================================================
 echo.
 
+:: ------------------------------------------------------------
+:: 1. Pre-flight Network Port 8000 Conflict Guard
+:: ------------------------------------------------------------
+set "PORT_BUSY="
+for /f "tokens=5" %%a in ('netstat -aon 2^>nul ^| findstr ":8000" ^| findstr "LISTENING"') do (
+    set "PORT_BUSY=%%a"
+)
+if defined PORT_BUSY (
+    echo [WARNING] Port 8000 is already in use by PID: %PORT_BUSY%
+    echo Another InkShift Gateway or web service is running.
+    echo If launch fails, please terminate process %PORT_BUSY% or restart your terminal.
+    echo.
+)
+
+:: ------------------------------------------------------------
+:: 2. Environment Resolution (Priority: .venv first, then Host)
+:: ------------------------------------------------------------
 set "ACTIVE_PYTHON="
 
-:: 1. Check host system 'python'
-where python >nul 2>&1 || goto :CHECK_PY
-python -c "import fastapi, uvicorn" >nul 2>&1 || goto :CHECK_PY
-set "ACTIVE_PYTHON=python"
-echo [InkShift] Found ready host Python environment.
-goto :DEPS_READY
+:: Step 2a. Check if local .venv exists
+if exist ".venv\Scripts\python.exe" (
+    ".venv\Scripts\python.exe" -c "import fastapi, uvicorn, aiosqlite, onnxruntime, cv2, deep_translator, rapidocr_onnxruntime" >nul 2>&1
+    if not errorlevel 1 (
+        set "ACTIVE_PYTHON=%~dp0.venv\Scripts\python.exe"
+        echo [InkShift] Using ready local .venv environment.
+        goto :DEPS_READY
+    )
+    echo [InkShift] Local .venv environment found, but some dependencies are missing.
+    set "ACTIVE_PYTHON=%~dp0.venv\Scripts\python.exe"
+    goto :INSTALL_DEPS
+)
 
-:CHECK_PY
-:: 2. Check host 'py' launcher
-where py >nul 2>&1 || goto :CHECK_VENV
-py -c "import fastapi, uvicorn" >nul 2>&1 || goto :CHECK_VENV
-set "ACTIVE_PYTHON=py"
-echo [InkShift] Found ready host Python via py launcher.
-goto :DEPS_READY
+:: Step 2b. If .venv does not exist, find host Python to initialize it
+echo [InkShift] Local .venv not found. Locating host Python...
 
-:CHECK_VENV
-:: 3. Check local .venv
-if not exist ".venv\Scripts\python.exe" goto :FIND_PYTHON
-".venv\Scripts\python.exe" -c "import fastapi, uvicorn" >nul 2>&1 || goto :FIND_PYTHON
-set "ACTIVE_PYTHON=%~dp0.venv\Scripts\python.exe"
-echo [InkShift] Using existing .venv environment.
-goto :DEPS_READY
+set "SYS_PYTHON="
+for %%p in (
+    "python"
+    "py -3"
+    "py"
+    "%LocalAppData%\Programs\Python\Python313\python.exe"
+    "%LocalAppData%\Programs\Python\Python312\python.exe"
+    "%LocalAppData%\Programs\Python\Python311\python.exe"
+    "%LocalAppData%\Programs\Python\Python310\python.exe"
+    "%ProgramFiles%\Python313\python.exe"
+    "%ProgramFiles%\Python312\python.exe"
+    "%ProgramFiles%\Python311\python.exe"
+    "C:\Python312\python.exe"
+    "C:\Python311\python.exe"
+) do (
+    if not defined SYS_PYTHON (
+        %%~p -c "import sys; exit(0 if sys.version_info.major == 3 and sys.version_info.minor >= 10 else 1)" >nul 2>&1
+        if not errorlevel 1 set "SYS_PYTHON=%%~p"
+    )
+)
 
-:FIND_PYTHON
-:: 4. If nowhere has dependencies, find Python binary to initialize
-where python >nul 2>&1 && set "ACTIVE_PYTHON=python"
-if defined ACTIVE_PYTHON goto :FOUND_SYS_PYTHON
-
-where py >nul 2>&1 && set "ACTIVE_PYTHON=py"
-if defined ACTIVE_PYTHON goto :FOUND_SYS_PYTHON
-
-if exist "%LocalAppData%\Programs\Python\Python312\python.exe" set "ACTIVE_PYTHON=%LocalAppData%\Programs\Python\Python312\python.exe" & goto :FOUND_SYS_PYTHON
-if exist "%LocalAppData%\Programs\Python\Python311\python.exe" set "ACTIVE_PYTHON=%LocalAppData%\Programs\Python\Python311\python.exe" & goto :FOUND_SYS_PYTHON
-if exist "%LocalAppData%\Programs\Python\Python310\python.exe" set "ACTIVE_PYTHON=%LocalAppData%\Programs\Python\Python310\python.exe" & goto :FOUND_SYS_PYTHON
-if exist "%ProgramFiles%\Python312\python.exe" set "ACTIVE_PYTHON=%ProgramFiles%\Python312\python.exe" & goto :FOUND_SYS_PYTHON
-if exist "%ProgramFiles%\Python311\python.exe" set "ACTIVE_PYTHON=%ProgramFiles%\Python311\python.exe" & goto :FOUND_SYS_PYTHON
-if exist "C:\Python312\python.exe" set "ACTIVE_PYTHON=C:\Python312\python.exe" & goto :FOUND_SYS_PYTHON
-if exist "C:\Python311\python.exe" set "ACTIVE_PYTHON=C:\Python311\python.exe" & goto :FOUND_SYS_PYTHON
-
-echo [ERROR] Python 3.10+ was not found on your system.
-echo Please install Python from https://www.python.org/
-echo Make sure to check the box: "Add python.exe to PATH".
-goto :HALT
-
-:FOUND_SYS_PYTHON
-:: Verify version >= 3.10
-"%ACTIVE_PYTHON%" -c "import sys; exit(0 if sys.version_info.major == 3 and sys.version_info.minor >= 10 else 1)" >nul 2>&1
-if errorlevel 1 (
-    echo [ERROR] Python 3.10 or newer is required.
+if not defined SYS_PYTHON (
+    echo [ERROR] Python 3.10+ was not found on your system.
+    echo Please install Python 3.10 or newer from https://www.python.org/
+    echo CRITICAL: Ensure you check the box: "Add python.exe to PATH".
     goto :HALT
 )
 
-:: Setup venv only if dependencies missing
-echo [InkShift] Setting up local virtual environment (.venv)...
-if not exist ".venv\Scripts\python.exe" (
-    "%ACTIVE_PYTHON%" -m venv .venv || goto :HALT
+echo [InkShift] Initializing local virtual environment .venv...
+"%SYS_PYTHON%" -m venv .venv
+if errorlevel 1 (
+    echo [ERROR] Failed to create virtual environment .venv.
+    goto :HALT
 )
 set "ACTIVE_PYTHON=%~dp0.venv\Scripts\python.exe"
-echo [InkShift] Installing dependencies from requirements.txt...
-"%ACTIVE_PYTHON%" -m pip install -r requirements.txt || goto :HALT
+
+:INSTALL_DEPS
+echo [InkShift] Installing / updating dependencies from requirements.txt...
+"%ACTIVE_PYTHON%" -m pip install --upgrade pip >nul 2>&1
+"%ACTIVE_PYTHON%" -m pip install -r requirements.txt
+if errorlevel 1 (
+    echo [ERROR] pip install failed. Please check network connectivity.
+    goto :HALT
+)
 
 :DEPS_READY
 
-:: 5. Initialize .env from .env.example if missing
-if not exist ".env" (
-    if exist ".env.example" copy .env.example .env >nul
-)
+:: ------------------------------------------------------------
+:: 3. Configuration Initialization (.env)
+:: ------------------------------------------------------------
+if exist ".env" goto :SKIP_ENV_INIT
+if exist ".env.example" copy .env.example .env >nul
+echo [InkShift] Initialized default configuration .env with zero-cost local engine.
+:SKIP_ENV_INIT
 
-:: 6. Check and Build Browser Extension if dist/ is missing
+:: ------------------------------------------------------------
+:: 4. Browser Extension Bundle Resolution (dist/ or zip fallback)
+:: ------------------------------------------------------------
 if exist "dist\manifest.json" goto :CHECK_MODELS
 
 echo [InkShift] Browser extension bundle not found in dist/.
-where npm >nul 2>&1 || goto :NO_NPM
+where npm >nul 2>&1 || goto :TRY_UNPACK_ZIP
 
-echo [InkShift] Node.js detected. Building extension bundle via Vite...
+echo [InkShift] Node.js detected. Compiling extension bundle via Vite...
 if not exist "node_modules" call npm install
 call npm run build:extension
 if exist "dist\manifest.json" (
     echo [InkShift] Browser extension successfully compiled to dist/.
-) else (
-    echo [WARNING] Extension build completed with warnings. Check dist/ directory.
+    goto :CHECK_MODELS
 )
-goto :CHECK_MODELS
 
-:NO_NPM
-echo [WARNING] Node.js is not installed or not in PATH.
-echo Cannot automatically build the browser extension from source.
-echo You can install Node.js (v18+) or load a pre-built extension zip.
+:TRY_UNPACK_ZIP
+if exist "inkshift-extension.zip" (
+    echo [InkShift] Pre-built package inkshift-extension.zip detected. Unpacking...
+    powershell -NoProfile -Command "Expand-Archive -Path 'inkshift-extension.zip' -DestinationPath 'dist' -Force" >nul 2>&1
+    if exist "dist\manifest.json" (
+        echo [InkShift] Browser extension successfully unpacked into dist/.
+        goto :CHECK_MODELS
+    )
+)
+
+echo [WARNING] Node.js is not installed and no pre-built extension zip was found.
+echo Gateway will run in headless API mode.
+echo To build the browser extension, please install Node.js v18+ from https://nodejs.org/
 
 :CHECK_MODELS
-:: 7. Check YOLO11 ONNX Model Weights
+:: ------------------------------------------------------------
+:: 5. YOLO11 ONNX Model Weights Check & Download
+:: ------------------------------------------------------------
 if exist ".cache\inkshift\models\yolo11s-seg.onnx" goto :LAUNCH_GATEWAY
 if exist "models\yolo11s-seg.onnx" goto :LAUNCH_GATEWAY
 
-echo [InkShift] YOLO11s-seg weights not found. Pre-downloading (~25 MB)...
+echo [InkShift] YOLO11s-seg detection weights not found.
+echo [InkShift] Downloading on-device model weights from Hugging Face ~39 MB...
 "%ACTIVE_PYTHON%" scripts\download_models.py
+if errorlevel 1 (
+    echo [ERROR] Failed to download or verify YOLO11s-seg model weights.
+    echo Please verify your internet connection or run manually:
+    echo   "%ACTIVE_PYTHON%" scripts\download_models.py
+    goto :HALT
+)
 
 :LAUNCH_GATEWAY
-:: 8. Launch Uvicorn Gateway
-echo.
-echo ============================================================
-echo   Gateway Server:   http://127.0.0.1:8000
-echo   OpenAPI Docs:     http://127.0.0.1:8000/docs
-echo.
-if exist "dist\manifest.json" (
-    echo   Chrome Extension: Load unpacked from:
-    echo   %~dp0dist
-) else (
-    echo   Chrome Extension: Please build extension or load pre-built zip.
+if "%~1"=="--dry-run" (
+    echo [InkShift] Dry run verification successful!
+    echo   Active Python:     %ACTIVE_PYTHON%
+    echo   Extension Manifest: dist\manifest.json
+    goto :HALT_SUCCESS
 )
+if "%~1"=="--help" goto :PRINT_HELP
+if "%~1"=="-h" goto :PRINT_HELP
+goto :START_SERVER
+
+:PRINT_HELP
+echo Usage: start.bat [OPTIONS]
+echo.
+echo Options:
+echo   --dry-run     Verify environment, dependencies, and models without launching server
+echo   --help, -h    Display this help message
+goto :HALT_SUCCESS
+
+:START_SERVER
+:: ------------------------------------------------------------
+:: 6. Launch Uvicorn Gateway & Display Onboarding Instructions
+:: ------------------------------------------------------------
+echo.
 echo ============================================================
-echo   Press Ctrl+C to terminate the server.
+echo   INKSHIFT GATEWAY IS READY!
+echo ============================================================
+echo   Server Address:    http://127.0.0.1:8000
+echo   OpenAPI Swagger:   http://127.0.0.1:8000/docs
+echo.
+
+if not exist "dist\manifest.json" goto :PRINT_API_MODE
+echo   [HOW TO LOAD BROWSER EXTENSION]
+echo   1. Open Google Chrome, Brave, or Microsoft Edge.
+echo   2. Navigate to:  chrome://extensions/
+echo   3. Enable Developer mode [toggle in top-right corner].
+echo   4. Click Load unpacked [top-left button].
+echo   5. Select this folder:
+echo      %~dp0dist
+echo.
+echo   [HOTKEYS ON MANGA SITES]
+echo   - Alt + Z : Toggle Japanese-to-Vietnamese Translation Overlay
+echo   - Alt + M : Toggle Mascot HUD / Mode Switcher
+goto :CONTINUE_BANNER
+
+:PRINT_API_MODE
+echo   [NOTICE] Extension dist/ not loaded. Gateway running in API mode.
+
+:CONTINUE_BANNER
+echo ============================================================
+echo   Press Ctrl+C to stop the gateway server.
 echo.
 
 "%ACTIVE_PYTHON%" -m uvicorn src.backend.app:app --host 127.0.0.1 --port 8000
+if errorlevel 1 (
+    echo.
+    echo [ERROR] InkShift Gateway server stopped unexpectedly.
+    goto :HALT
+)
+
+:HALT_SUCCESS
+echo [InkShift] Verification complete.
+endlocal
+exit /b 0
 
 :HALT
 echo.
-echo [InkShift] Process finished.
-pause
+echo [InkShift] Process terminated.
+if "%~1"=="" (
+    echo Press any key to close this window...
+    pause >nul
+)
 endlocal
+exit /b 1

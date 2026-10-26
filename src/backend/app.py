@@ -31,7 +31,6 @@ from src.backend.engines.local import (
     GoogleFreeTranslator,
     LLMTextTranslator,
     LocalTranslationEngine,
-    MangaOCRAdapter,
     OCRRouter,
     RapidOCRAdapter,
     TranslatorRegistry,
@@ -142,12 +141,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     registry.register(cloud_engine, is_default=is_cloud_default)
 
     # 6. Initialize Local On-Device Translation OCR and Translators
-    manga_ocr_adapter = MangaOCRAdapter(
-        model_path=settings.inkshift_local_manga_ocr_model_path or None,
-    )
     rapid_ocr_adapter = RapidOCRAdapter()
     ocr_router = OCRRouter(
-        manga_ocr=manga_ocr_adapter,
         rapid_ocr=rapid_ocr_adapter,
         default_model=settings.inkshift_local_default_ocr,
     )

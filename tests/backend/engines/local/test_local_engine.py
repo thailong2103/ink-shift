@@ -632,6 +632,41 @@ async def test_local_engine_rapidocr_full_page_bypass_cropping() -> None:
     assert manga_ocr.call_count == 0
 
 
+@pytest.mark.asyncio
+async def test_local_engine_japanese_routes_to_rapidocr_standalone() -> None:
+    """ADR-017 regression test: Japanese language translates cleanly with RapidOCR alone (no MangaOCR)."""
+    rapid_ocr = StubFullPageOCR("rapidocr", ["何をしているの？"])
+    # Standalone router initialized without manga_ocr adapter
+    router = OCRRouter(rapid_ocr=rapid_ocr, default_model="auto")
+
+    translator = StubTranslator("mock-trans", prefix="vi_")
+    reg = TranslatorRegistry(default_translator_name="mock-trans")
+    reg.register("mock-trans", translator)
+
+    engine = LocalTranslationEngine(
+        ocr_router=router,
+        translator_registry=reg,
+        name="local",
+        default_ocr="auto",
+    )
+
+    bubble = DetectedBubble(id="b_ja", box_2d=(50, 50, 250, 250))
+    req = TranslationRequest(
+        image=make_test_image_base64(),
+        source_lang="ja",
+        target_lang="vi",
+        engine="local",
+    )
+
+    resp = await engine.translate(req, bubbles=[bubble])
+
+    assert len(resp.blocks) == 1
+    assert resp.blocks[0].source_text == "何をしているの？"
+    assert resp.blocks[0].translated_text == "vi_何をしているの？"
+    assert rapid_ocr.full_page_calls == 1
+
+
+
 
 
 

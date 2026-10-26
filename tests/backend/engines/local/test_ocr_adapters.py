@@ -1,4 +1,4 @@
-"""Unit tests for swappable OCR adapters (RapidOCR and MangaOCR)."""
+"""Unit tests for RapidOCR DirectML adapter."""
 
 from __future__ import annotations
 
@@ -11,7 +11,6 @@ from PIL import Image
 from src.backend.detection.assembler import BubbleWorkItem
 from src.backend.detection.base import DetectedBubble
 from src.backend.engines.local.ocr.base import BaseOCREngine, FullPageOCREngine
-from src.backend.engines.local.ocr.manga_ocr import MangaOCRAdapter
 from src.backend.engines.local.ocr.rapid_ocr import RapidOCRAdapter
 
 # ---------------------------------------------------------------------------
@@ -114,76 +113,39 @@ async def test_rapid_ocr_engine_initialization_error(monkeypatch: pytest.MonkeyP
 
 
 # ---------------------------------------------------------------------------
-# MangaOCRAdapter Tests
+# RapidOCR Japanese & Multilingual Tests (ADR-017)
 # ---------------------------------------------------------------------------
 
 
-class MockMangaOCREngine:
-    """Mock engine simulating MangaOcr instance."""
+class MockRapidJapaneseEngine:
+    """Mock engine simulating RapidOCR with Japanese output."""
 
-    def __init__(self, transcription: str = "何をしているの？") -> None:
+    def __init__(self, transcription: str = "私 は   逃 げ ま す ！") -> None:
         self.transcription = transcription
         self.call_count = 0
 
-    def __call__(self, img: Image.Image) -> str:
+    def __call__(self, img_np: Any) -> tuple[list[Any], float]:
         self.call_count += 1
-        return self.transcription
+        box = [[0, 0], [10, 0], [10, 10], [0, 10]]
+        return [[box, self.transcription, 0.95]], 0.025
 
 
 @pytest.mark.asyncio
-async def test_manga_ocr_protocol_conformance() -> None:
-    """MangaOCRAdapter must implement BaseOCREngine protocol."""
-    adapter = MangaOCRAdapter(manga_ocr_engine=MockMangaOCREngine())
+async def test_rapid_ocr_japanese_transcription() -> None:
+    """RapidOCRAdapter should transcribe Japanese text via DirectML mock."""
+    mock_engine = MockRapidJapaneseEngine("何をしているの？")
+    adapter = RapidOCRAdapter(rapidocr_engine=mock_engine)
+
     assert isinstance(adapter, BaseOCREngine)
-    assert adapter.name == "manga-ocr"
+    assert adapter.name == "rapidocr"
     assert await adapter.is_available() is True
 
+    crop = make_dummy_crop_bytes()
+    results = await adapter.recognize_batch([crop])
 
-@pytest.mark.asyncio
-async def test_manga_ocr_recognize_batch() -> None:
-    """MangaOCRAdapter should transcribe Japanese text and clean spaces."""
-    mock_engine = MockMangaOCREngine("私 は   逃 げ ま す ！")
-    adapter = MangaOCRAdapter(manga_ocr_engine=mock_engine)
-
-    crop1 = make_dummy_crop_bytes()
-    crop2 = make_dummy_crop_bytes()
-    results = await adapter.recognize_batch([crop1, crop2])
-
-    assert len(results) == 2
-    # Cleans spaces between CJK characters
-    assert results[0] == "私は逃げます！"
-    assert results[1] == "私は逃げます！"
-    assert mock_engine.call_count == 2
-
-
-@pytest.mark.asyncio
-async def test_manga_ocr_empty_and_corrupt_crops() -> None:
-    """MangaOCRAdapter should handle empty or corrupt image crops without crashing."""
-    mock_engine = MockMangaOCREngine("こんにちは")
-    adapter = MangaOCRAdapter(manga_ocr_engine=mock_engine)
-
-    results = await adapter.recognize_batch([b"", b"not_an_image"])
-    assert results == ["", ""]
-    assert mock_engine.call_count == 0
-
-
-@pytest.mark.asyncio
-async def test_manga_ocr_empty_batch() -> None:
-    """Empty batch should immediately return empty list without engine calls."""
-    mock_engine = MockMangaOCREngine()
-    adapter = MangaOCRAdapter(manga_ocr_engine=mock_engine)
-    assert await adapter.recognize_batch([]) == []
-    assert mock_engine.call_count == 0
-
-
-@pytest.mark.asyncio
-async def test_manga_ocr_missing_model_error() -> None:
-    """Missing model weights and package must raise RuntimeError."""
-    adapter = MangaOCRAdapter(manga_ocr_engine=None, model_path="/non_existent/manga.onnx")
-
-    with pytest.raises(RuntimeError) as exc_info:
-        await adapter.recognize_batch([make_dummy_crop_bytes()])
-    assert "Failed to initialize MangaOCR" in str(exc_info.value)
+    assert len(results) == 1
+    assert results[0] == "何をしているの？"
+    assert mock_engine.call_count == 1
 
 
 # ---------------------------------------------------------------------------

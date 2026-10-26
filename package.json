@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "build:extension": "vite build",
+    "package:extension": "python scripts/package_extension.py",
     "dev:extension": "vite build --watch",
     "test:extension": "vitest run",
     "typecheck:extension": "tsc --noEmit"

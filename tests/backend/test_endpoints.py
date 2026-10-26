@@ -469,6 +469,63 @@ class TestTranslateEndpoint:
             assert len(data["blocks"]) == 1
             assert data["blocks"][0]["translated_text"] == "Xin chào"
 
+    async def test_translate_local_engine_japanese_source_lang_regression(
+        self,
+        async_client: httpx.AsyncClient,
+        client_headers: dict[str, str],
+        sample_translation_payload: dict[str, Any],
+    ) -> None:
+        """Regression test for ADR-017: source_lang='ja' with engine='local' succeeds via RapidOCR."""
+        from src.backend.schemas.contract import TranslationResponse
+
+        mock_response = TranslationResponse(
+            success=True,
+            page_hash=SAMPLE_IMAGE_HASH,
+            engine_used="local",
+            execution_time_ms=145,
+            from_cache=False,
+            blocks=[
+                TranslatedBlock(
+                    id="blk_ja_01",
+                    box=(50, 80, 200, 300),
+                    source_text="何をしているの？",
+                    translated_text="Bạn đang làm gì đấy?",
+                    direction="vertical",
+                    confidence=0.96,
+                )
+            ],
+        )
+        with patch(
+            "src.backend.engines.local.engine.LocalTranslationEngine.is_available",
+            new_callable=AsyncMock,
+            return_value=True,
+        ), patch(
+            "src.backend.engines.local.engine.LocalTranslationEngine.translate",
+            new_callable=AsyncMock,
+            return_value=mock_response,
+        ) as mock_translate:
+            payload = dict(sample_translation_payload)
+            payload["engine"] = "local"
+            payload["source_lang"] = "ja"
+            payload["force_refresh"] = True
+
+            resp = await async_client.post(
+                "/api/v1/translate",
+                json=payload,
+                headers=client_headers,
+            )
+
+            assert resp.status_code == 200
+            data = resp.json()
+            assert data["success"] is True
+            assert data["engine_used"] == "local"
+            assert len(data["blocks"]) == 1
+            assert data["blocks"][0]["source_text"] == "何をしているの？"
+            assert data["blocks"][0]["translated_text"] == "Bạn đang làm gì đấy?"
+            mock_translate.assert_called_once()
+            called_req = mock_translate.call_args[0][0]
+            assert called_req.source_lang == "ja"
+
     async def test_translate_content_safety_blocked_maps_to_422(
         self,
         async_client: httpx.AsyncClient,

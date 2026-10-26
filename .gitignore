@@ -65,3 +65,9 @@ docs/vi/
 # Temporary Draft Documentation & Research Scratch
 docs/temp/
 
+# Generated Codebase Dumps & Archives
+codebase_skeleton.xml
+repomix.config.json
+*.zip
+inkshift-extension.zip
+

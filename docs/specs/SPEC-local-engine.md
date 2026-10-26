@@ -18,7 +18,7 @@
 
 Before proceeding to implementation, the following architectural assumptions are recorded:
 1. **Target Hardware & Acceleration:** Target workstation runs Windows 11 with an AMD Ryzen 7 8845HS APU (Zen 4, 8C/16T, AVX-512) and AMD Radeon 780M iGPU (RDNA 3, 12 CUs) backed by 32GB RAM (UMA). Microsoft DirectML via `onnxruntime-directml` serves as the primary hardware acceleration provider, with `CPUExecutionProvider` (AVX-512) as the automated node fallback.
-2. **Permanent In-Memory Session Cache:** Given 32GB unified RAM and lightweight model weights (~39.3MB for YOLO11s-seg + OCR models), all ONNX `InferenceSession` instances (`YOLO11s-seg`, `manga-ocr`, `RapidOCR`) remain resident in memory across requests. No unloading, disk re-reading, or memory deallocation occurs between page translations.
+2. **Permanent In-Memory Session Cache:** Given 32GB unified RAM and lightweight model weights (~39.3MB for YOLO11s-seg + ~15MB for RapidOCR), all ONNX `InferenceSession` instances (`YOLO11s-seg`, `RapidOCR`) remain resident in memory across requests. No unloading, disk re-reading, or memory deallocation occurs between page translations.
 3. **Model Weight Storage:** Pre-trained ONNX model files are stored locally under `.cache/inkshift/models/yolo11s-seg.onnx`. Comic-Text-Detector weights are deprecated and purged.
 4. **Coordinate Integrity:** Coordinate outputs strictly comply with `api-contract`: normalized integer bounding boxes $[ymin, xmin, ymax, xmax]$ in $[0, 1000]$, and simplified polygon contours as relative percentages $[0.0, 100.0]$.
 5. **Zero API Cost by Default:** Default translation runs through `deep-translator` using Google Translate web batch requests, requiring $0.00$ API spend. An optional `LLMTextTranslator` mode reuses `gemini_api_key` and `xkiro_api_key` from Module 3 for enhanced literary phrasing.
@@ -35,12 +35,8 @@ flowchart TD
     DET --> POST["Stage 1.1: Mask Decoding & RDP Compression<br/>(18-25 Relative % Vertices, SFX Filtered)"]
     POST --> SORT["Stage 1.2: 2-Tier RTL Reading Order Sorter<br/>(Panel Top-Right-First + Score = 1.5Y - X)"]
     
-    SORT --> ROU{"Stage 2: OCR Selection & Routing<br/>(Explicit Override OR Auto Unicode Probe)"}
-    ROU -->|Japanese Raw / 'manga-ocr'| M_OCR["MangaOCRAdapter<br/>(Vision-Encoder-Decoder ONNX)"]
-    ROU -->|English / Latin / Chinese / 'rapidocr'| R_OCR["RapidOCRAdapter<br/>(PP-OCRv4 ONNX + De-hyphenator)"]
-    
-    M_OCR --> MERGE["Extracted Text List"]
-    R_OCR --> MERGE
+    SORT --> ROU["Stage 2: RapidOCR DirectML Engine<br/>(Single-Pass Full-Page / Crop Multilingual & Japanese CJK)"]
+    ROU --> MERGE["Extracted Text List"]
     
     MERGE --> TR{"Stage 3: Translator Router"}
     TR -->|Default ($0 Zero-Cost)| G_TR["GoogleFreeTranslator<br/>(deep-translator Batch Client)"]
@@ -57,9 +53,7 @@ flowchart TD
    - **Tier 1 (Panel):** Assign bubbles to panels; sort panels Top-to-Bottom, Right-to-Left. Unassigned bubbles map to a default page panel.
    - **Tier 2 (In-Panel):** Sort bubbles inside each panel by $Score = 1.5Y - X$ (prioritizing top and right bubbles).
 4. **Connected / Merged Bubble Support:** When adjacent speech bubbles merge into a single contour, YOLO11 separates independent child text blocks (`DetectedText`). Frontend renders 1 white polygon mask with multiple discrete inner text containers.
-5. **Dual-Mode OCR Selection:**
-   - **Explicit User Selection:** Readers can specify `ocr_model: "manga-ocr" | "rapidocr"` in request payloads or popup.
-   - **Automatic Unicode Probe (`ocr_model: "auto"`):** Probes the first bubble with `RapidOCR` and inspects Unicode ranges (Hiragana/Katakana $\to$ `manga-ocr`; Latin/Hanzi $\to$ `RapidOCR`). Results cached per chapter.
+5. **Unified DirectML RapidOCR (ADR-017):** Single robust OCR engine wrapping PP-OCRv4 via ONNX Runtime DirectML. Natively supports Japanese (Kanji/Kana), English, Korean, and Chinese with sub-second execution on AMD Radeon 780M without requiring PyTorch or CUDA.
 6. **Manga Typography & De-hyphenation:** Merge multi-line vertical Japanese text cleanly, and de-hyphenate multi-line English dialogue (`under-` + `stand` $\to$ `understand`).
 7. **Fast Zero-Cost Batch Translation:** Translate all speech bubbles on a manga page in a single batch network call ($<350$ms) via `deep-translator`.
 
@@ -115,9 +109,8 @@ src/backend/
     ├── ocr/
     │   ├── __init__.py
     │   ├── base.py            # BaseOCREngine protocol
-    │   ├── manga_ocr.py       # Japanese manga-ocr ONNX adapter
-    │   ├── rapid_ocr.py       # Multilingual RapidOCR adapter
-    │   ├── router.py          # OCRRouter (manual override + Unicode probe + chapter cache)
+    │   ├── rapid_ocr.py       # Multilingual & Japanese RapidOCR DirectML adapter
+    │   ├── router.py          # OCRRouter (manual override + chapter cache)
     │   └── text_assembler.py  # De-hyphenator and comic line merger
     └── translator/
         ├── __init__.py
@@ -336,7 +329,7 @@ def assemble_comic_lines(raw_lines: list[str]) -> str:
 
 ## 8. Memory Management & DirectML Session Lifecycle
 
-1. **Warm Cache Policy:** All ONNX inference sessions (`YOLO11s-seg`, `manga-ocr`, `RapidOCR`) are instantiated during the FastAPI server lifespan startup (`lifespan` in `app.py`).
+1. **Warm Cache Policy:** All ONNX inference sessions (`YOLO11s-seg`, `RapidOCR`) are instantiated during the FastAPI server lifespan startup (`lifespan` in `app.py`).
 2. **Provider Configuration:**
    ```python
    dml_providers = [
@@ -369,12 +362,11 @@ def assemble_comic_lines(raw_lines: list[str]) -> str:
 
 ### 10.1 Success Criteria (SC)
 - [ ] **SC-1 (Detector Accuracy):** `ComicTextDetector` detects speech bubbles in sample manga fixture images, returning $[ymin, xmin, ymax, xmax]$ boxes strictly bounded in $[0, 1000]$.
-- [ ] **SC-2 (Japanese OCR):** `MangaOCRAdapter` accurately transcribes vertical Japanese text with furigana from cropped test fixtures.
+- [ ] **SC-2 (Japanese & Multilingual OCR):** `RapidOCRAdapter` accurately transcribes Japanese (Kanji/Kana) and Latin text from page crops or full-page input via DirectML.
 - [ ] **SC-3 (Multilingual OCR & De-hyphenation):** `RapidOCRAdapter` extracts Latin text; `assemble_comic_lines` joins wrapped lines with spaces and removes line-ending hyphens.
 - [x] **SC-4 (Language Routing & Override):**
-  - When `source_lang="ja"` or `ocr_model="manga-ocr"`, routes directly to `manga-ocr` with zero probe.
-  - When `source_lang="en" | "ko" | "zh"` or `ocr_model="rapidocr"`, routes directly to `RapidOCR` with zero probe.
-  - When `source_lang="auto"`, probe accurately classifies Hiragana/Katakana to `manga-ocr`, and Hangul/Latin/Hanzi to `RapidOCR`, caching result under `chapter_url`.
+  - When `source_lang="ja"` or `source_lang="en" | "ko" | "zh"` or `ocr_model="auto"`, routes cleanly to `RapidOCRAdapter` with zero probe failure.
+  - Extension `source_lang="ja"` translates reliably without `RuntimeError` or `ENGINE_EXECUTION_FAILED`.
 - [ ] **SC-5 (Zero-Cost Translation):** `GoogleFreeTranslator` translates a batch of 10 sentences to Vietnamese in $<400$ms.
 - [ ] **SC-6 (End-to-End Latency):** Full page pipeline executes in $\le 2.5$ seconds on AMD Radeon 780M / 8845HS.
 - [ ] **SC-7 (Quality Gate & Constraints):** Zero suppressions (`@ts-ignore`, `# noqa`, `# type: ignore`), strict mypy passes, test coverage across all new lines $\ge 80\%$.

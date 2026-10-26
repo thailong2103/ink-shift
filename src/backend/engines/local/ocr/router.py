@@ -20,7 +20,7 @@ logger = get_logger("ocr.router")
 
 
 class OCRRouter:
-    """Routes OCR tasks to appropriate adapters (MangaOCR vs RapidOCR) based on overrides or auto-probe."""
+    """Routes OCR tasks to DirectML RapidOCR with full-page and crop support, and chapter-level caching."""
 
     # Unicode ranges for Japanese Kana:
     # Hiragana: \u3040-\u309F, Katakana: \u30A0-\u30FF, Katakana Extensions: \u31F0-\u31FF
@@ -38,21 +38,25 @@ class OCRRouter:
 
     def __init__(
         self,
-        manga_ocr: BaseOCREngine,
-        rapid_ocr: BaseOCREngine,
+        manga_ocr: BaseOCREngine | None = None,
+        rapid_ocr: BaseOCREngine | None = None,
         default_model: str = "auto",
-        fallback_model: str = "manga-ocr",
+        fallback_model: str = "rapidocr",
     ) -> None:
-        """Initialize OCRRouter with specialized OCR adapters.
+        """Initialize OCRRouter with specialized or consolidated OCR adapters.
 
         Args:
-            manga_ocr: Specialized Japanese OCR adapter (e.g. MangaOCRAdapter).
-            rapid_ocr: Multilingual/Latin/Chinese/Korean OCR adapter (e.g. RapidOCRAdapter).
-            default_model: Default selection mode ('auto', 'manga-ocr', 'rapidocr').
-            fallback_model: Fallback adapter when text script cannot be detected ('manga-ocr').
+            manga_ocr: Optional specialized Japanese OCR adapter. If omitted, aliases to rapid_ocr.
+            rapid_ocr: Multilingual/Japanese OCR adapter (e.g. RapidOCRAdapter).
+            default_model: Default selection mode ('auto', 'rapidocr', 'manga-ocr').
+            fallback_model: Fallback adapter identifier ('rapidocr' or 'manga-ocr').
         """
-        self._manga_ocr = manga_ocr
-        self._rapid_ocr = rapid_ocr
+        from src.backend.engines.local.ocr.rapid_ocr import RapidOCRAdapter
+
+        self._rapid_ocr: BaseOCREngine = rapid_ocr or RapidOCRAdapter()
+        # If manga_ocr is explicitly provided (e.g. In unit tests), use it;
+        # otherwise (production without MangaOCR), alias cleanly to rapid_ocr
+        self._manga_ocr: BaseOCREngine = manga_ocr if manga_ocr is not None else self._rapid_ocr
         self._default_model = default_model
         self._fallback_model = fallback_model
         self._chapter_cache: dict[str, str] = {}
@@ -72,20 +76,28 @@ class OCRRouter:
         normalized = model_name.lower().strip()
         if normalized in ("manga-ocr", "ja", "japanese"):
             return self._manga_ocr
-        elif normalized in ("rapidocr", "en", "english", "zh", "chinese", "ko", "korean"):
+        elif normalized in (
+            "rapidocr",
+            "en",
+            "english",
+            "zh",
+            "chinese",
+            "ko",
+            "korean",
+        ):
             return self._rapid_ocr
         else:
             raise ValueError(
-                f"Unknown OCR model '{model_name}'. Valid options: 'auto', 'manga-ocr', 'rapidocr', 'ja', 'en', 'ko', 'zh'."
+                f"Unknown OCR model '{model_name}'. Valid options: 'auto', 'rapidocr', 'manga-ocr', 'ja', 'en', 'ko', 'zh'."
             )
 
     def classify_text_script(self, text: str) -> str:
         """Classify script based on Unicode character analysis.
 
-        - Hiragana or Katakana present -> 'manga-ocr' (Japanese raw dialogue)
-        - Hangul present -> 'rapidocr' (Korean Manhwa)
-        - Latin alphabet present -> 'rapidocr' (English/Latin scans)
-        - Hanzi present without Kana -> 'rapidocr' (Chinese Manhua)
+        - Hiragana or Katakana present -> 'manga-ocr'
+        - Hangul present -> 'rapidocr'
+        - Latin alphabet present -> 'rapidocr'
+        - Hanzi present without Kana -> 'rapidocr'
         - Empty or punctuation-only -> fallback_model
 
         Args:
@@ -103,10 +115,8 @@ class OCRRouter:
         has_latin = bool(self.LATIN_SCRIPT_REGEX.search(cleaned))
         has_hanzi = bool(self.HANZI_SCRIPT_REGEX.search(cleaned))
 
-        # Check for Japanese Kana
         if has_kana:
             decision = "manga-ocr"
-        # Check for Korean Hangul, Latin alphabet, or Hanzi
         elif has_hangul or has_latin or has_hanzi:
             decision = "rapidocr"
         else:
@@ -124,7 +134,7 @@ class OCRRouter:
         return decision
 
     async def probe_language(self, sample_crops: list[bytes] | bytes) -> str:
-        """Probe sample bubble crop(s) using RapidOCR to classify text script.
+        """Probe sample bubble crop(s) using RapidOCR.
 
         Args:
             sample_crops: One or more binary image crops from the current page.
@@ -139,7 +149,6 @@ class OCRRouter:
 
         logger.debug("probe_language: probing %d valid crops via RapidOCR...", len(valid_crops))
         try:
-            # Use RapidOCR for fast multi-script detection on up to 3 sample bubbles
             probe_results = await self._rapid_ocr.recognize_batch(valid_crops[:3])
             for text in probe_results:
                 cleaned = text.strip()
@@ -148,8 +157,6 @@ class OCRRouter:
                     if detected != self._fallback_model:
                         logger.debug("probe_language: determined script '%s' from sample '%s'", detected, cleaned[:30])
                         return detected
-            # If all were indeterminate or punctuation, return fallback
-            logger.debug("probe_language: all samples indeterminate; using fallback [%s]", self._fallback_model)
             return self._fallback_model
         except (RuntimeError, ValueError, TypeError, OSError) as probe_err:
             logger.debug("probe_language exception: %s; using fallback [%s]", probe_err, self._fallback_model)
@@ -164,7 +171,7 @@ class OCRRouter:
         """Resolve appropriate BaseOCREngine adapter according to override, cache, or probe.
 
         Args:
-            requested_model: User-specified model ('auto', 'manga-ocr', 'rapidocr', or None).
+            requested_model: User-specified model ('auto', 'rapidocr', 'ja', 'en', etc.).
             sample_crops: List of bubble image crops available for probing.
             chapter_id: Optional unique chapter identifier to leverage cache.
 
@@ -175,19 +182,27 @@ class OCRRouter:
             requested_model if requested_model is not None and requested_model != "" else self._default_model
         ).lower().strip()
 
-        # 1. Explicit manual override bypasses probe and cache completely
-        # Supports direct model names ('manga-ocr', 'rapidocr') and language codes ('ja', 'en', 'ko', 'zh')
+        # 1. Manual override or specific language code
         if target_mode in ("manga-ocr", "ja", "japanese"):
-            logger.debug("OCR model/language manually specified: 'manga-ocr' (from '%s')", target_mode)
-            return self.get_adapter("manga-ocr")
+            if await self._manga_ocr.is_available():
+                return self._manga_ocr
+            logger.info("MangaOCR unavailable on host; falling back to RapidOCR adapter")
+            return self._rapid_ocr
 
-        if target_mode in ("rapidocr", "en", "english", "zh", "chinese", "ko", "korean"):
-            logger.debug("OCR model/language manually specified: 'rapidocr' (from '%s')", target_mode)
-            return self.get_adapter("rapidocr")
+        if target_mode in (
+            "rapidocr",
+            "en",
+            "english",
+            "zh",
+            "chinese",
+            "ko",
+            "korean",
+        ):
+            return self._rapid_ocr
 
         if target_mode != "auto":
             raise ValueError(
-                f"Unknown OCR model or language '{requested_model}'. Valid options: 'auto', 'manga-ocr', 'rapidocr', 'ja', 'en', 'ko', 'zh'."
+                f"Unknown OCR model or language '{requested_model}'. Valid options: 'auto', 'rapidocr', 'manga-ocr', 'ja', 'en', 'ko', 'zh'."
             )
 
         # 2. Check chapter cache for auto mode
@@ -198,20 +213,16 @@ class OCRRouter:
 
         # 3. Auto-probe language from sample crops
         if sample_crops and len(sample_crops) > 0:
-            logger.debug(
-                "Auto mode: probing text script from %d sample crops...",
-                min(3, len(sample_crops)),
-            )
             detected_model = await self.probe_language(sample_crops)
-            logger.debug("Auto mode resolved adapter: [%s]", detected_model)
         else:
             detected_model = self._fallback_model
-            logger.debug("No sample crops available; using fallback adapter [%s]", detected_model)
 
-        # 4. Cache decision if chapter_id is provided
+        if detected_model == "manga-ocr" and not await self._manga_ocr.is_available():
+            logger.info("MangaOCR unavailable on host; falling back to RapidOCR adapter")
+            detected_model = "rapidocr"
+
         if chapter_id:
             self._chapter_cache[chapter_id] = detected_model
-            logger.debug("Cached adapter [%s] for chapter '%s'", detected_model, chapter_id)
 
         return self.get_adapter(detected_model)
 
@@ -225,7 +236,7 @@ class OCRRouter:
 
         Args:
             image_crops: List of binary image crops.
-            requested_model: Optional user-specified model ('auto', 'manga-ocr', 'rapidocr').
+            requested_model: Optional user-specified model ('auto', 'rapidocr', 'ja', etc.).
             chapter_id: Optional chapter ID for caching.
 
         Returns:
@@ -262,15 +273,16 @@ class OCRRouter:
     ) -> tuple[list[str], str]:
         """Transcribe text using single-pass full-page recognition or intelligent crop fallback.
 
-        Bypasses per-bubble cropping when RapidOCR is selected or detected. If MangaOCR is
-        selected or Japanese script is detected, automatically crops bubbles and dispatches.
+        Executes full-page recognition via RapidOCR with DirectML GPU acceleration across all
+        languages (Japanese, English, Korean, Chinese). Falls back to crop-based recognition
+        if full-page mode is unsupported.
 
         Args:
             image_np: RGB numpy array or PIL Image of the uncropped page.
             work_items: Sequence of BubbleWorkItem instances.
             image_width: Original image width in pixels.
             image_height: Original image height in pixels.
-            requested_model: User-specified model ('auto', 'manga-ocr', 'rapidocr', 'ja', 'en', etc.).
+            requested_model: User-specified model ('auto', 'rapidocr', 'ja', 'en', etc.).
             chapter_id: Optional unique chapter identifier for caching.
 
         Returns:
@@ -283,26 +295,49 @@ class OCRRouter:
             requested_model if requested_model is not None and requested_model != "" else self._default_model
         ).lower().strip()
 
-        # 1. Explicit Japanese override -> Crop and route to MangaOCR
-        if target_mode in ("manga-ocr", "ja", "japanese"):
-            crops = self._crop_work_items(image_np, work_items, image_width, image_height)
-            texts = await self._manga_ocr.recognize_batch(crops)
-            return texts, self._manga_ocr.name
+        # Validate requested model/language
+        valid_modes = (
+            "auto",
+            "rapidocr",
+            "manga-ocr",
+            "ja",
+            "japanese",
+            "en",
+            "english",
+            "zh",
+            "chinese",
+            "ko",
+            "korean",
+        )
+        if target_mode not in valid_modes:
+            raise ValueError(
+                f"Unknown OCR model or language '{requested_model}'. Valid options: 'auto', 'rapidocr', 'manga-ocr', 'ja', 'en', 'ko', 'zh'."
+            )
 
-        # 2. Explicit Non-Japanese override -> Fast single-pass RapidOCR Full-Page
-        if target_mode in ("rapidocr", "en", "english", "zh", "chinese", "ko", "korean"):
+        # 1. Explicit Japanese override
+        if target_mode in ("manga-ocr", "ja", "japanese"):
+            # If manga_ocr is distinct and available (e.g. Unit test stub), use it
+            if await self._manga_ocr.is_available() and self._manga_ocr.name != self._rapid_ocr.name:
+                crops = self._crop_work_items(image_np, work_items, image_width, image_height)
+                texts = await self._manga_ocr.recognize_batch(crops)
+                return texts, self._manga_ocr.name
+
+            # Consolidated RapidOCR DirectML path (Fast, sub-second on AMD 780M, no crash!)
             if hasattr(self._rapid_ocr, "recognize_full_page") and getattr(self._rapid_ocr, "supports_full_page", False):
                 texts = await self._rapid_ocr.recognize_full_page(image_np, work_items, image_width, image_height)
                 return texts, self._rapid_ocr.name
-            # Fallback to batch crops if full-page unsupported (e.g. basic mock in tests)
             crops = self._crop_work_items(image_np, work_items, image_width, image_height)
             texts = await self._rapid_ocr.recognize_batch(crops)
             return texts, self._rapid_ocr.name
 
-        if target_mode != "auto":
-            raise ValueError(
-                f"Unknown OCR model or language '{requested_model}'. Valid options: 'auto', 'manga-ocr', 'rapidocr', 'ja', 'en', 'ko', 'zh'."
-            )
+        # 2. Explicit Non-Japanese override
+        if target_mode in ("rapidocr", "en", "english", "zh", "chinese", "ko", "korean"):
+            if hasattr(self._rapid_ocr, "recognize_full_page") and getattr(self._rapid_ocr, "supports_full_page", False):
+                texts = await self._rapid_ocr.recognize_full_page(image_np, work_items, image_width, image_height)
+                return texts, self._rapid_ocr.name
+            crops = self._crop_work_items(image_np, work_items, image_width, image_height)
+            texts = await self._rapid_ocr.recognize_batch(crops)
+            return texts, self._rapid_ocr.name
 
         # 3. Auto Mode: Check chapter cache
         if chapter_id and chapter_id in self._chapter_cache:
@@ -320,22 +355,19 @@ class OCRRouter:
         # 4. Auto Mode: Single-pass probe via RapidOCR Full-Page
         if hasattr(self._rapid_ocr, "recognize_full_page") and getattr(self._rapid_ocr, "supports_full_page", False):
             rapid_texts = await self._rapid_ocr.recognize_full_page(image_np, work_items, image_width, image_height)
-            # Check if any recognized bubble contains Japanese Kana
             has_kana = any(bool(self.JAPANESE_KANA_REGEX.search(t)) for t in rapid_texts if t.strip())
-            if has_kana:
-                logger.debug("Auto mode detected Japanese Kana in full-page scan -> routing to MangaOCR")
+            if has_kana and self._manga_ocr.name != self._rapid_ocr.name and await self._manga_ocr.is_available():
                 if chapter_id:
                     self._chapter_cache[chapter_id] = "manga-ocr"
                 crops = self._crop_work_items(image_np, work_items, image_width, image_height)
                 texts = await self._manga_ocr.recognize_batch(crops)
                 return texts, self._manga_ocr.name
             else:
-                logger.debug("Auto mode detected Non-Japanese text in full-page scan -> retaining RapidOCR")
                 if chapter_id:
                     self._chapter_cache[chapter_id] = "rapidocr"
                 return rapid_texts, self._rapid_ocr.name
 
-        # Fallback if rapid_ocr does not support full-page (e.g. basic mock)
+        # Fallback if rapid_ocr does not support full-page (e.g. Basic mock)
         crops = self._crop_work_items(image_np, work_items, image_width, image_height)
         return await self.recognize_routed(crops, requested_model="auto", chapter_id=chapter_id)
 
@@ -366,4 +398,3 @@ class OCRRouter:
             crop_pil.save(buf, format="PNG", compress_level=1)
             crops_bytes.append(buf.getvalue())
         return crops_bytes
-

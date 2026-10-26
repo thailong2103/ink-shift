@@ -196,18 +196,17 @@ async def test_invalid_model_override_raises_error() -> None:
 
 @pytest.mark.asyncio
 async def test_auto_probe_selects_manga_ocr_for_japanese() -> None:
-    """Auto probe returning Japanese text selects MangaOCRAdapter."""
-    manga_stub = StubOCREngine("manga-ocr")
+    """Auto probe returning Japanese text resolves cleanly to RapidOCR (ADR-017)."""
     rapid_stub = StubOCREngine("rapidocr", canned_text="何をしているの？")
 
-    router = OCRRouter(manga_ocr=manga_stub, rapid_ocr=rapid_stub)
+    router = OCRRouter(rapid_ocr=rapid_stub)
 
     crop = make_dummy_crop_bytes()
     adapter = await router.resolve_engine(
         requested_model="auto",
         sample_crops=[crop],
     )
-    assert adapter.name == "manga-ocr"
+    assert adapter.name == "rapidocr"
     assert rapid_stub.call_count == 1  # RapidOCR was used to probe
 
 
@@ -393,11 +392,10 @@ def make_dummy_work_item(ymin: int = 100, xmin: int = 100, ymax: int = 300, xmax
 
 @pytest.mark.asyncio
 async def test_recognize_routed_full_page_explicit_japanese() -> None:
-    """Explicit 'ja' or 'manga-ocr' should crop and route directly to MangaOCR."""
-    manga_stub = StubOCREngine("manga-ocr", canned_text="会話文")
-    rapid_stub = StubFullPageOCREngine("rapidocr", canned_text="ENGLISH")
+    """Explicit 'ja' or 'manga-ocr' should route cleanly to RapidOCR via DirectML (ADR-017)."""
+    rapid_stub = StubFullPageOCREngine("rapidocr", canned_text="会話文")
 
-    router = OCRRouter(manga_ocr=manga_stub, rapid_ocr=rapid_stub)
+    router = OCRRouter(rapid_ocr=rapid_stub)
     dummy_img = Image.new("RGB", (500, 500), color="white")
     work_items = [make_dummy_work_item(), make_dummy_work_item(400, 100, 600, 300)]
 
@@ -409,10 +407,9 @@ async def test_recognize_routed_full_page_explicit_japanese() -> None:
         requested_model="ja",
     )
 
-    assert engine_used == "manga-ocr"
+    assert engine_used == "rapidocr"
     assert texts == ["会話文", "会話文"]
-    assert manga_stub.call_count == 1
-    assert rapid_stub.full_page_calls == 0
+    assert rapid_stub.full_page_calls == 1
 
 
 @pytest.mark.asyncio
@@ -466,10 +463,9 @@ async def test_recognize_routed_full_page_auto_detection() -> None:
     assert rapid_stub.full_page_calls == 1
     assert manga_stub.call_count == 0
 
-    # 2. Japanese manga (RapidOCR full-page detects Kana -> switches to MangaOCR)
-    manga_stub_ja = StubOCREngine("manga-ocr", canned_text="にほんご")
+    # 2. Japanese manga (RapidOCR full-page detects Kana -> retains RapidOCR ADR-017)
     rapid_stub_ja = StubFullPageOCREngine("rapidocr", canned_text="あ、こんにちは")
-    router_ja = OCRRouter(manga_ocr=manga_stub_ja, rapid_ocr=rapid_stub_ja)
+    router_ja = OCRRouter(rapid_ocr=rapid_stub_ja)
 
     chapter_id_ja = "chap_ja"
     texts_ja, engine_used_ja = await router_ja.recognize_routed_full_page(
@@ -481,8 +477,8 @@ async def test_recognize_routed_full_page_auto_detection() -> None:
         chapter_id=chapter_id_ja,
     )
 
-    assert engine_used_ja == "manga-ocr"
-    assert texts_ja == ["にほんご"]
-    assert router_ja.get_cached_model(chapter_id_ja) == "manga-ocr"
-    assert manga_stub_ja.call_count == 1
+    assert engine_used_ja == "rapidocr"
+    assert texts_ja == ["あ、こんにちは"]
+    assert router_ja.get_cached_model(chapter_id_ja) == "rapidocr"
+    assert rapid_stub_ja.full_page_calls == 1
 

@@ -1,195 +1,127 @@
-# Implementation Plan: Reader Layout Strategy & Smooth Overlay Anchoring (Phase 26)
+# Implementation Plan: Zero-Friction 1-Click Launch & Out-of-the-Box User Experience (Phase 31)
 
 ## Overview
-Phase 26 resolves critical rendering and overlay positioning regressions on modern manga readers (notably MangaDex). It decouples global user visibility (`.inkshift-overlay-hidden`) from spatial viewport culling (`style.display`), dynamically detects reader layout modes (**Single Page**, **Double Page Spread**, and **Long Strip**), updates culling algorithms so Double-Page mode preserves both active pages simultaneously without flickering, and implements smooth scroll-anchored overlay positioning without jitter.
+Transform the repository setup and launch experience into a true, deterministic "1-click out-of-the-box" pipeline for any new user downloading a fresh clone. Eliminate false-positive dependency checks, environment priority inversions, unhandled network failures, port socket collisions, and the strict requirement for Node.js by providing robust launchers, portable extension bundling, zero-cost initial defaults, and browser-assisted onboarding.
 
 ---
 
-## Architecture Decisions
-- **ADR-013: Orthogonal Visibility Decoupling:** Global visibility toggle only manipulates `.inkshift-overlay-hidden` via Shadow DOM `:host(.inkshift-overlay-hidden) { display: none !important; }`. `updateActiveOverlaysAppearance()` never mutates `host.style.display`. Spatial culling is the exclusive responsibility of `syncOverlaysVisibilityAndPosition()`.
-- **ADR-013: Reader Layout Strategy:** Replaces hardcoded `mangadex.org` single-page checks with dynamic `ReaderLayoutMode: 'single' | 'double' | 'strip'`. Uses MangaDex container fast-paths and DOM geometry fallbacks (detecting horizontal spreads for double, vertical stacks for strip).
-- **ADR-013: Multi-Mode Culling:** Double-page spreads allow both left and right active pages to remain visible (`style.display = ''`) without one killing the other. Long strips allow all viewport-intersecting pages to remain visible.
-- **ADR-013: Smooth Scroll Anchoring:** Attaches throttled/rAF scroll listeners on `window` and reader containers to keep overlay coordinates locked to image bounding rects in real time.
+## Architecture Decisions & Governing Standards
+
+1. **Virtual Environment Priority & Deep Dependency Probe:**
+   - Always prioritize `.venv\Scripts\python.exe` over host system Python.
+   - Replace shallow `import fastapi, uvicorn` with a deep multi-subsystem probe (`fastapi`, `uvicorn`, `aiosqlite`, `onnxruntime`, `cv2`, `deep_translator`).
+   - If any core dependency is missing, automatically trigger `pip install -r requirements.txt`.
+
+2. **Zero-Cost Out-of-the-Box Default Configuration (`.env.example`):**
+   - Configure default engine out of the box to `local` (`INKSHIFT_DEFAULT_ENGINE=local`) and translator to `google-free` (`INKSHIFT_LOCAL_DEFAULT_TRANSLATOR=google-free`).
+   - Allow new users to immediately translate manga without demanding cloud API keys (Gemini/OpenAI) on first run.
+
+3. **Portable Extension Packaging for Zero-Node.js Users:**
+   - Create a Python packaging utility (`scripts/package_extension.py`) to bundle `dist/` into a portable, versioned zip (`inkshift-extension.zip`).
+   - If a new user does not have Node.js/npm installed, `start.bat` will detect and extract `inkshift-extension.zip` if available, ensuring a working extension without requiring Node.js.
+
+4. **Port 8000 Collision Guard & Downloader Error Bounding:**
+   - Add pre-flight socket inspection in `start.bat` to detect lingering Python processes on port 8000 and prevent `[Errno 10048] address already in use`.
+   - Add explicit `if errorlevel 1` checks to `scripts\download_models.py` with retry suggestions.
+
+5. **Browser Auto-Onboarding:**
+   - Upon gateway launch, trigger browser to open setup instructions or the API docs, and present clear Chrome extension loading coordinates (`chrome://extensions/`).
 
 ---
 
 ## Task List
 
-### Phase 1: Visibility Decoupling & Toggle Bug Fix (Foundation)
-- [x] Task 26.1: Decouple Global Visibility from Spatial Culling (`src/extension/content/overlay_manager.ts`, `src/extension/content/content_script.ts`)
-- [x] Task 26.2: Unit Tests for Visibility Decoupling & Stale Overlay Prevention (`tests/extension/test_overlay_manager.test.ts`)
+### Phase 1: Launcher Hardening (`start.bat`) & Dependency Integrity
+- [x] Task 31.1: Fix environment priority inversion & deep dependency verification in `start.bat`
+- [x] Task 31.2: Add port 8000 pre-flight guard & strict model download error bounding in `start.bat`
 
-### Checkpoint: Foundation
-- [x] Toggling visibility off and on preserves `display: 'none'` on off-screen/culled hosts
-- [x] Unit tests pass cleanly
+### Checkpoint: Launcher Hardened
+- [x] `start.bat` prioritizes `.venv` and verifies all AI dependencies.
+- [x] Socket collision and network download failures are gracefully trapped.
 
-### Phase 2: Reader Layout Mode Detection & Multi-Mode Culling
-- [x] Task 26.3: Implement Dynamic Reader Layout Mode Detection (`src/extension/content/content_script.ts`)
-- [x] Task 26.4: Update Multi-Mode Culling for Double Page & Long Strip (`src/extension/content/overlay_manager.ts`)
-- [x] Task 26.5: Unit Tests for Double Page & Strip Culling (`tests/extension/test_overlay_manager.test.ts`, `tests/extension/test_content_orchestrator.test.ts`)
+### Phase 2: Frictionless Default Configuration & Portable Extension Packaging
+- [x] Task 31.3: Update `.env.example` with zero-friction local/free defaults
+- [x] Task 31.4: Implement `scripts/package_extension.py` and zip extraction fallback in `start.bat`
 
-### Checkpoint: Multi-Mode Culling
-- [x] Double-page reader preserves both active pages simultaneously
-- [x] Long-strip reader preserves all intersecting pages
-- [x] Single-page reader maintains center-page isolation
+### Checkpoint: Portable Distribution Ready
+- [x] New user can run offline without API keys.
+- [x] Users without Node.js can unpack pre-built extension cleanly.
 
-### Phase 3: Smooth Scroll Anchoring & Viewport-Aware Dispatching
-- [x] Task 26.6: Implement Smooth Scroll Anchoring & Container Event Listeners (`src/extension/content/content_script.ts`, `src/extension/content/observers.ts`)
-- [x] Task 26.7: Viewport-Aware Image Dispatching on Long Strip (`src/extension/content/content_script.ts`)
+### Phase 3: Onboarding Automation & End-to-End Verification
+- [x] Task 31.5: Add browser auto-onboarding launcher trigger and friendly instructions in `start.bat`
+- [x] Task 31.6: Run complete verification suite (Extension Vitest 250/250, Typecheck, Python tests)
 
-### Checkpoint: Scroll & Anchoring
-- [x] Overlays track image positions smoothly during scroll without jitter
-- [x] Event listeners clean up cleanly on teardown
-
-### Phase 4: Full Verification & Quality Gate
-- [x] Task 26.8: End-to-End Regression & Quality Gate (`npm run test:extension`, `npm run typecheck:extension`, `python scripts/check.py --fast`)
+### Checkpoint: Complete Out-of-the-Box Parity
+- [x] All unit and contract tests pass.
+- [x] Extension freshly built and validated in `dist/`.
+- [x] Ready for human sign-off.
 
 ---
 
-# Implementation Plan: MangaDex Hot-Change Adaptation & Resilient Layout Tracking (Phase 27)
-
-## Overview
-Phase 27 resolves in-page mode switching anomalies (Hot Change) on MangaDex and universal readers. It eliminates wrong page number mappings (where query order `index + 1` caused page 4/5 credits to mount on page 8/9), filters layout detection to strictly viewport-intersecting images, observes container class/attribute mutations during mode changes, and introduces responsive bubble rescaling on dimension shifts.
-
----
-
-## Architecture Decisions
-- **ADR-014: Viewport-Aware Geometry Filter:** `detectCurrentReaderLayoutMode()` strictly filters candidate images to viewport bounds before evaluating geometry, ignoring off-screen carousel buffer images.
-- **ADR-014: 4-Tier Page Resolver Cascade:** Resolves exact chapter page numbers using MangaDex DOM indicators (`[data-page]`, `alt="Page X"`), universal dataset attributes, and `ChapterManifest.pages` URL mapping before falling back to DOM index.
-- **ADR-014: Container Attribute Mutation Observer:** In `observers.ts`, observes `attributes: true` with `attributeFilter: ['class', 'data-reader-mode', 'style']` on reader container to detect layout switches without page reloads.
-- **ADR-014: Responsive Bubble Rescaling:** Recomputes letterboxed speech bubble coordinates and font sizes inside Shadow DOM when image dimensions change by $\ge 15\%$.
-
----
-
-## Task List
-
-### Phase 1: Viewport Geometry & Accurate Page Resolver (Core)
-- [x] Task 27.1: Viewport-Aware Intersection Filter in `detectCurrentReaderLayoutMode` (`src/extension/content/content_script.ts`)
-- [x] Task 27.2: 4-Tier Image Page Number Resolver (`src/extension/content/content_script.ts`)
-- [x] Task 27.3: Unit Tests for Viewport Filtering & Page Resolver (`tests/extension/test_overlay_manager.test.ts`, `tests/extension/test_content_orchestrator.test.ts`)
-
-### Checkpoint: Accurate Page Association
-- [x] Double-page reader identifies active pages correctly without carousel buffer confusion
-- [x] Pages 8 and 9 receive translations for Pages 8 and 9 (never 4 or 5)
-
-### Phase 2: Hot-Change Observer & Responsive Bubble Rescaling
-- [x] Task 27.4: Container Class & Attribute Observer for In-Page Mode Switches (`src/extension/content/observers.ts`, `src/extension/content/content_script.ts`)
-- [x] Task 27.5: Responsive Speech Bubble Rescaling on Layout Shifts (`src/extension/content/overlay_manager.ts`)
-- [x] Task 27.6: Unit Tests for Hot-Change Adaptation & Rescaling (`tests/extension/test_overlay_manager.test.ts`)
-
-### Checkpoint: Hot-Change & Rescaling
-- [x] Hot change takes effect in $\le 50\text{ms}$ without page reload or manual scroll
-- [x] Speech bubbles contour accurately without mask distortion across faces
-
-### Phase 3: Full Verification & Quality Gate
-- [x] Task 27.7: End-to-End Regression & Quality Gate (`npm run test:extension`, `npm run typecheck:extension`, `python scripts/check.py --fast`)
-
----
-
-## Phase 28: Manga Typography & Smart Bubble Font Fitting
+## Implementation Plan: OCR Pipeline Consolidation & DirectML RapidOCR Standardization (Phase 32)
 
 ### Overview
-Phase 28 introduces authentic manga typography, user-selectable comic fonts with complete Vietnamese Unicode diacritics, and upgrades the font fitting algorithm to Smart Bubble Typography Fitter v2. This eliminates flat single-line stretching in tall bubbles, tiny text in large shouting balloons, and clipping in micro-bubbles.
-
-### Architecture Decisions
-- **ADR-015: Manga Typography Strategy:** Package `.woff2` fonts offline under `src/extension/assets/fonts/` (CC Wild Words, Comic Neue, Bangers, Patrick Hand, System UI).
-- **ADR-015: Dynamic Max/Min Bounds:** Compute `maxFontSize = Math.min(Math.max(24, Math.floor(H * 0.65)), 80)` and drop `minFontSize = 7.5` with micro-padding for $H < 28\text{px}$.
-- **ADR-015: Aspect-Ratio Oval Line Balancing:** Apply native CSS `text-wrap: balance` and constrain `max-width: 82%` when $W / H \ge 1.3$ and $words \ge 4$.
-- **ADR-015: Shouting Scale:** Render high-impact shouting bubbles ($words \le 3$, area $\ge 10,000\text{px}^2$) with `font-weight: 800` filling 50–70% balloon height.
-
-### Task List
-
-#### Phase 1: Manga Font Packaging & Configuration UI
-- [x] Task 28.1: Package and register Manga font assets (`src/extension/assets/fonts/`), update `manifest.json` `web_accessible_resources`, and define `@font-face` styles in `src/extension/content/overlay_manager.ts`.
-- [x] Task 28.2: Add Manga font picker to `popup.html`, wire storage persistence in `popup.ts`, and sync runtime font updates to overlays in `content_script.ts`.
-
-#### Phase 2: Smart Bubble Typography Fitter v2
-- [x] Task 28.3: Upgrade `fitFontSize()` in `src/extension/content/font_fitter.ts` with dynamic upper bound, adaptive lower bound, and aspect-ratio oval constraints.
-- [x] Task 28.4: Update `overlay_manager.ts` text layers with `text-wrap: balance`, shouting detection (`font-weight: 800`), and `--inkshift-font-family`.
-
-#### Phase 3: Testing & Quality Gate
-- [x] Task 28.5: Author unit tests in `tests/extension/test_font_fitter.test.ts` and `tests/extension/test_popup.test.ts` for dynamic scaling, shouting bounds, oval balancing, and font switching.
-- [x] Task 28.6: Full Regression & Quality Gate (`npm run test:extension`, `npm run typecheck:extension`, `python scripts/check.py --fast`, `npm run build:extension`).
+Consolidate the local OCR pipeline around `RapidOCR` (PP-OCRv4 ONNX) running natively on Microsoft DirectML across AMD Radeon 780M, Intel, and NVIDIA GPUs. Formally deprecate and remove the non-functional `MangaOCRAdapter` stub (which previously caused HTTP 500 crashes whenever Japanese `source_lang="ja"` was selected in the browser extension), update architecture decision records (authoring ADR-017 and amending ADR-006), update the Living Spec (`SPEC-local-engine.md`), and modernize the unit test suite to guarantee 100% reliable, sub-second Japanese manga translation.
 
 ---
 
-# Implementation Plan: Unified UI Overhaul — Bento Popup UI & Dynamic Floating Mascot HUD (Phase 29)
+### Architecture Decisions & Governing Standards
 
-## Overview
-Phase 29 implements the approved [SPEC-popup-and-mascot-hud.md](../docs/specs/SPEC-popup-and-mascot-hud.md) and locked [design-system/inkshift/MASTER.md](../design-system/inkshift/MASTER.md). It delivers the Warm Obsidian & Mascot Terracotta (`#DE886D`) theme, transforms the monolithic Popup into an ultra-clean 2-View Bento Grid model (compact Main View $\le 420\text{px}$ + Settings Drawer via `⚙️`), and deploys an in-page Dynamic Floating Mascot HUD inside Shadow DOM with draggable physics, edge-snapping, live state reflection, and in-place popup expansion.
+1. **Hardware-Aligned DirectML OCR (ADR-017):**
+   - Standardize on `rapidocr-onnxruntime` with DirectML GPU acceleration (`DmlExecutionProvider`) for all languages (`ja`, `en`, `ko`, `zh`, and `auto`).
+   - Eliminate CPU-bound PyTorch MangaOCR execution (~25s/page latency and >1.5GB RAM usage) in favor of sub-second (~500ms) DirectML full-page recognition.
+
+2. **ADR Lifecycle & Living Spec Synchronization:**
+   - Preserve historical integrity of ADR-006 by marking `Status: Accepted (Amended by ADR-008, ADR-017)`.
+   - Author sequential decision record `docs/decisions/ADR-017-ocr-consolidation-and-directml-rapidocr.md`.
+   - Synchronize `docs/specs/SPEC-local-engine.md` and `docs/PROJECT_STATE.md`.
+
+3. **Deterministic Language Routing:**
+   - Map `ja`, `japanese`, `manga-ocr`, `en`, `ko`, `zh`, and `auto` directly to `RapidOCRAdapter`.
+   - Support both single-pass full-page recognition and bubble crop fallback.
+   - Guarantee `source_lang="ja"` from the browser extension succeeds with HTTP 200 without raising `ENGINE_EXECUTION_FAILED`.
+
+4. **Zero Dead Code & Clean Configuration:**
+   - Remove `src/backend/engines/local/ocr/manga_ocr.py`.
+   - Remove obsolete setting `inkshift_local_manga_ocr_model_path` in `src/backend/config.py`.
+   - Clean up scratch test scripts and obsolete mocks in unit tests.
 
 ---
 
-## Architecture Decisions
-- **Unified Warm Obsidian Theme:** Establishes `src/extension/shared/tokens.css` with exact mascot body color `#DE886D` on `#12100E` obsidian background (WCAG AAA contrast 16.2:1).
-- **2-View Bento Popup:** Splits reading controls (Main View) from 1-time setup (Settings View) using CSS 3D translation with zero vertical scroll on main view.
-- **Isolated Shadow DOM Mascot HUD:** Mounts a draggable 44×44px floating character badge on reader pages with left/right auto-docking and in-place 360×420px expanded card.
-- **Live Pipeline Mascot State Machine:** Character reactively switches sprites (`idle`, `reading`, `scanning`, `translating`, `success`, `error`, `sleeping`) based on translation lifecycle events.
+### Task List for Phase 32
 
----
+#### Phase 1: Documentation & Architectural Governance
+- [x] Task 32.1: Author `docs/decisions/ADR-017-ocr-consolidation-and-directml-rapidocr.md` and amend `ADR-006`
+- [x] Task 32.2: Update Living Spec `docs/specs/SPEC-local-engine.md` and `docs/PROJECT_STATE.md`
 
-## Task List
+#### Checkpoint: Documentation Synchronized
+- [x] ADR-017 authored and indexed.
+- [x] SPEC-local-engine.md reflects active architecture.
 
-### Phase 1: Token Engine & Assets Foundation
-- [x] Task 29.1: Create `src/extension/shared/tokens.css` with Warm Obsidian & Mascot Terracotta theme tokens (`src/extension/shared/tokens.css`).
-- [x] Task 29.2: Package Mascot vector sprites into `src/extension/assets/mascot/` with customizable CSS variables (`src/extension/assets/mascot/*`, `src/extension/manifest.json`).
+#### Phase 2: Backend Core Engine & Router Refactoring
+- [x] Task 32.3: Refactor `OCRRouter` (`src/backend/engines/local/ocr/router.py`) to consolidate to RapidOCR
+- [x] Task 32.4: Clean up dead code, configurations, and package exports (`manga_ocr.py`, `config.py`, `__init__.py`)
 
-### Phase 2: 2-View Bento Popup UI Re-architecture
-- [x] Task 29.3: Refactor `src/extension/popup/popup.html` into View A (Main Reading Dashboard $\le 420\text{px}$) and View B (Settings & Configuration Drawer via `⚙️`).
-- [x] Task 29.4: Rewrite `src/extension/popup/popup.css` using Bento Grid layout, tokens.css variables, zero-emoji SVG icons, and smooth view-sliding transitions.
-- [x] Task 29.5: Update `src/extension/popup/popup.ts` to manage View A $\leftrightarrow$ View B sliding transitions, gear rotation, and full regression parity.
+#### Checkpoint: Core Engine Consolidated
+- [x] Router maps `ja` and all languages cleanly to RapidOCR.
+- [x] Dead code and obsolete config settings removed.
 
-### Phase 3: Dynamic Floating Mascot HUD Component
-- [x] Task 29.6: Create `src/extension/content/mascot_hud.ts` with draggable pointer physics and left/right edge-snapping within Shadow DOM.
-- [x] Task 29.7: Wire reactive mascot state transitions (`idle`, `reading`, `scanning`, `translating`, `success`, `error`, `sleeping`) from content orchestrator.
-- [x] Task 29.8: Implement in-place expanded Bento card when clicking mascot, with bi-directional `chrome.storage.local` synchronization.
+#### Phase 3: Test Suite Modernization & Verification Gates
+- [x] Task 32.5: Modernize unit tests in `tests/backend/engines/local/` and add Japanese regression test
+- [x] Task 32.6: Run full verification suite (Pytest, Extension Vitest 250/250, Typecheck)
 
-### Phase 4: Verification & Quality Gate
-- [x] Task 29.9: Author unit tests in `tests/extension/test_popup_views.test.ts` and `tests/extension/test_mascot_hud.test.ts`.
-- [x] Task 29.10: Full Regression Verification (`npm run test:extension`, `npm run typecheck:extension`, `python scripts/check.py --fast`, `npm run build:extension`).
+#### Checkpoint: Full Verification Passed
+- [x] 100% unit and integration tests passing.
+- [x] Zero regressions across extension and backend.
 
 ---
 
 ## Risks and Mitigations
+
 | Risk | Impact | Mitigation |
-|------|--------|------------|
-| Popup height overflow on small displays | Low | Strict $\le 420\text{px}$ limit on View A; inner scroll strictly localized to View B drawer. |
-| Floating mascot blocking manga speech bubbles | Medium | Auto edge-docking snaps to outer 12px margin; user can drag to any vertical position or toggle off in settings. |
-| Pointer events leaking from mascot to reader page | Low | Use `event.stopPropagation()` and Shadow DOM encapsulation. |
-| Existing popup unit tests breaking from DOM restructuring | Medium | Maintain identical element IDs (`engine-select`, `provider-select`, `model-search-input`, etc.) so controller logic remains fully compatible. |
-
----
-
-# Implementation Plan: UI Restructuring, Modular Components & Anti-Slop Design System (Phase 30)
-
-## Overview
-Phase 30 executes the comprehensive UI architecture overhaul approved in ADR-016 according to `/design`, `/design-system`, and `/design-taste-frontend`. It establishes a strict 3-Layer Design Token hierarchy, introduces a zero-emoji vector SVG icon system, decouples UI business controllers into reusable modules in `src/extension/ui/`, decomposes the 2,434-line god-file `mascot_hud.ts`, and polishes the visual layer to eliminate border clutter with quiet, tactile Bento components.
-
----
-
-## Architecture Decisions
-- **ADR-016: 3-Layer Token Engine:** Formalizes Primitive $\rightarrow$ Semantic $\rightarrow$ Component tokens in `src/extension/shared/tokens.css` and `design-system/inkshift/MASTER.md`.
-- **ADR-016: Reusable UI Module Architecture:** Shared UI logic for domains, engines, aesthetics, and settings drawer is housed under `src/extension/ui/` and reused across both extension popup and in-page mascot HUD.
-- **ADR-016: Mascot HUD Decomposition:** Splits `mascot_hud.ts` into clean physics/state management and popover rendering, adopting shared tokens and UI controllers.
-- **ADR-016: Zero-Emoji Vector Standard:** `src/extension/shared/icons.ts` provides consistent SVG vector icons, eliminating raw Unicode emojis.
-- **ADR-016: Anti-Slop Quiet Styling:** Replaces inner boxed wireframes with subtle hover wells, refined spacing rhythm, and tactile micro-interactions.
-
----
-
-## Task List
-
-### Phase 1: 3-Layer Token Engine & Vector Icon System
-- [x] Task 30.1: Upgrade `src/extension/shared/tokens.css` and `design-system/inkshift/MASTER.md` to complete 3-Layer Token architecture.
-- [x] Task 30.2: Create `src/extension/shared/icons.ts` with crisp, zero-emoji SVG icon generators.
-
-### Phase 2: Modular Shared UI Components
-- [x] Task 30.3: Create modular UI controllers in `src/extension/ui/` (`domain_manager_ui.ts`, `aesthetics_controls_ui.ts`, `engine_selector_ui.ts`, `settings_drawer_ui.ts`).
-
-### Phase 3: Extension Popup & Mascot HUD Refactoring
-- [x] Task 30.4: Refactor `src/extension/popup/` (`popup.html`, `popup.css`, `popup.ts`) to use modular UI components, embedded close handling, and anti-slop quiet styles.
-- [x] Task 30.5: Refactor `src/extension/content/mascot_hud.ts` to adopt Option 1 (Embedded Popup Iframe Single Source of Truth) and lock prominent 150px × 160px scale with full 2D dragging physics.
-
-### Phase 4: Verification, Quality Gate & Documentation
-- [x] Task 30.6: Update unit tests in `tests/extension/test_popup.test.ts` and `tests/extension/test_mascot_hud.test.ts` for modular architecture parity.
-- [x] Task 30.7: Full Regression Check (`npm run test:extension`, `npm run typecheck:extension`, `python scripts/check.py --fast`, `npm run build:extension`) and update `docs/PROJECT_STATE.md`.
+|---|---|---|
+| DirectML unsupported on older GPUs / VMs | Medium | Local engine auto-falls back to `CPUExecutionProvider` if `DmlExecutionProvider` fails. |
+| Node.js missing on user system | High | Provide pre-packaged zip and script `scripts/package_extension.py` with fallback unzipper. |
+| Port 8000 occupied by previous zombie process | Medium | Check port via PowerShell `Get-NetTCPConnection` / `netstat` and prompt user to kill or restart. |
+| RapidOCR reading vertical Japanese text | Low | RapidOCR PP-OCRv4 detects Japanese Kanji/Kana reliably; bubble-scoped bounding box association in `router.py` groups vertical lines correctly. |
 

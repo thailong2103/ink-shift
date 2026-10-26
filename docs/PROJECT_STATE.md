@@ -1,7 +1,7 @@
 # InkShift: Project State & Living Dashboard
 
-> **Last Updated:** 2026-10-25  
-> **Active Milestone:** Phase 30 Completed — UI Restructuring, Modular Components & Anti-Slop Design System  
+> **Last Updated:** 2026-10-26  
+> **Active Milestone:** Phase 32 Completed — OCR Pipeline Consolidation and DirectML RapidOCR Standardization  
 > **Solo Developer Timeline:** 4-Week Build  
 > **Primary Rule:** *"The agent proposes; the human decides. No exceptions."*  
 
@@ -10,11 +10,11 @@
 ## 1. Executive Summary & Current Status
 
 InkShift is a solo developer project running on a focused 4-week delivery cycle.  
-The current phase has completed **Module 0 (Governance)**, **Module 1: `api-contract`**, **Module 2: `backend-engine`**, **Module 3: `cloud-engine`**, **Module 4: `extension-core`**, **Module 5: `local-engine`**, **Phases 15–29**, and **Phase 30: UI Restructuring, Modular Components & Anti-Slop Design System (ADR-016: 3-Layer Token Engine, Zero-Emoji Vector SVG Icons, Option 1 Embedded Popup Iframe Single Source of Truth, Prominent 150x160px Mascot Scale, Quiet Tactile Bento Styling, Alt+Z / Alt+M Reader Shortcuts, Z-Index Occlusion Guard, and 100% 250/250 Unit Test Parity)**.
+The current phase has completed **Module 0 (Governance)**, **Module 1: `api-contract`**, **Module 2: `backend-engine`**, **Module 3: `cloud-engine`**, **Module 4: `extension-core`**, **Module 5: `local-engine`**, **Phases 15–31**, and **Phase 32: OCR Pipeline Consolidation & DirectML RapidOCR Standardization (Purged non-functional MangaOCR stub, standardized on DirectML RapidOCR PP-OCRv4, updated ADR-017 & amended ADR-006, synchronized SPEC-local-engine.md, verified 100% 301/301 backend pytest + 250/250 extension vitest + zero TypeScript errors)**.
 
 | Metric | Current State | Target |
 |---|---|---|
-| **Timeline Status** | Phase 30 Completed (Anti-Slop Modular UI Architecture) | 4 Weeks Total |
+| **Timeline Status** | Phase 31 Completed (Zero-Friction 1-Click Launch) | 4 Weeks Total |
 | **Active Module** | `extension-core` (Phase 30: Modular UI & Anti-Slop System) | Authentic Manga UI/UX |
 | **Working Tree Status** | Clean commits / Strict zero-suppression bar | Clean commits |
 | **Agent Protocol** | Codified in `AGENTS.md` & `.agents/rules/` | Deterministic bootstrap |
@@ -105,8 +105,8 @@ graph TD
 
 - **Capability Map:** [docs/specs/CAPABILITY_MAP.md](specs/CAPABILITY_MAP.md)
 - **Active / Completed Specs:** [docs/specs/SPEC-api-contract.md](specs/SPEC-api-contract.md), [docs/specs/SPEC-backend-engine.md](specs/SPEC-backend-engine.md), [docs/specs/SPEC-cloud-engine.md](specs/SPEC-cloud-engine.md), [docs/specs/SPEC-extension-core.md](specs/SPEC-extension-core.md), [docs/specs/SPEC-local-engine.md](specs/SPEC-local-engine.md), [docs/specs/SPEC-manga-context-graph.md](specs/SPEC-manga-context-graph.md), [docs/specs/SPEC-dynamic-llm-hub.md](specs/SPEC-dynamic-llm-hub.md), [docs/specs/SPEC-reader-layout-and-smooth-overlay.md](specs/SPEC-reader-layout-and-smooth-overlay.md), [docs/specs/SPEC-popup-and-mascot-hud.md](specs/SPEC-popup-and-mascot-hud.md)
-- **Active Task Checklist:** [tasks/todo.md](../tasks/todo.md) (Phase 29: Bento Popup UI & Dynamic Floating Mascot HUD Completed)
-- **Current Milestone:** Phase 29 Completed — Unified UI Overhaul: Bento Popup UI & Dynamic Floating Mascot HUD (Warm Obsidian & Terracotta Theme `#DE886D`, 2-View Bento Drawer, Draggable Edge-Snapping Mascot HUD, Live Pipeline State Machine, In-Place Bento Card).
+- **Active Task Checklist:** [tasks/todo.md](../tasks/todo.md) (Phase 32 Completed & Verified)
+- **Current Milestone:** Phase 32 Completed — OCR Pipeline Consolidation and DirectML RapidOCR Standardization
 
 ---
 
@@ -119,7 +119,7 @@ graph TD
 | [ADR-003](decisions/ADR-003-backend-engine-architecture.md) | Backend Engine Runtime, Pluggable Architecture, and SQLite Caching | 2026-10-10 | Accepted (Amended by ADR-008) |
 | [ADR-004](decisions/ADR-004-cloud-engine-architecture.md) | Cloud Vision Engine Architecture, Multi-Provider Adapters, and Safety Fallbacks | 2026-10-11 | Accepted (Amended by ADR-007, ADR-008) |
 | [ADR-005](decisions/ADR-005-extension-core-architecture.md) | Chromium Extension Core Architecture, Shadow DOM Isolation, and Robustness Controls | 2026-10-12 | Accepted (Amended by ADR-007, ADR-008, ADR-013, ADR-014, ADR-015) |
-| [ADR-006](decisions/ADR-006-local-engine-architecture.md) | Local Engine Architecture, DirectML Acceleration, Swappable OCR, and Zero-Cost Translation Pipeline | 2026-10-15 | Accepted (Amended by ADR-007, ADR-008) |
+| [ADR-006](decisions/ADR-006-local-engine-architecture.md) | Local Engine Architecture, DirectML Acceleration, Swappable OCR, and Zero-Cost Translation Pipeline | 2026-10-15 | Accepted (Amended by ADR-007, ADR-008, ADR-017) |
 | [ADR-007](decisions/ADR-007-yolo11-manga-detection-and-visual-grounding.md) | Comprehensive Detection & Translation Pipeline Upgrade with YOLO11s-seg, Polygon Compression, and Set-of-Marks Visual Grounding | 2026-10-16 | Accepted (Amended by ADR-008) |
 | [ADR-008](decisions/ADR-008-consolidated-engine-architecture-and-shared-detection.md) | Consolidated Engine Architecture, Shared Gateway Detection, and Dynamic Registries | 2026-10-17 | Accepted |
 | [ADR-009](decisions/ADR-009-smart-reader-detection-and-domain-filtering.md) | Smart Reader Detection Heuristics and Unified Domain Filtering | 2026-10-21 | Accepted |
@@ -129,6 +129,8 @@ graph TD
 | [ADR-013](decisions/ADR-013-reader-layout-strategy-and-smooth-overlay-anchoring.md) | Reader Layout Strategy, Multi-Mode Culling, and Smooth Overlay Anchoring | 2026-10-24 | Accepted |
 | [ADR-014](decisions/ADR-014-mangadex-hot-change-and-resilient-layout-tracking.md) | MangaDex Hot-Change Adaptation, Viewport-Aware Geometry, and Resilient Layout Tracking | 2026-10-24 | Accepted |
 | [ADR-015](decisions/ADR-015-manga-typography-and-smart-font-fitting.md) | Manga Typography, Font Switching, and Smart Bubble Typography Fitter v2 | 2026-10-24 | Accepted |
+| [ADR-016](decisions/ADR-016-ui-restructuring-modular-components-and-anti-slop-design-system.md) | UI Restructuring, Modular Components, and Anti-Slop Design System | 2026-10-25 | Accepted |
+| [ADR-017](decisions/ADR-017-ocr-consolidation-and-directml-rapidocr.md) | OCR Pipeline Consolidation and DirectML RapidOCR Standardization | 2026-10-26 | Accepted |
 
 
 

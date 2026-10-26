@@ -1,12 +1,16 @@
 # ADR-006: Local Engine Architecture, DirectML Acceleration, Swappable OCR, and Zero-Cost Translation Pipeline
 
-- **Status:** Accepted
+- **Status:** Accepted (Amended by ADR-008, ADR-017)
 - **Date:** 2026-10-15
 - **Decision-Maker:** Solo Developer (human)
 - **Consulted:** AI Agent
 - **Target Module:** `local-engine` (Module 5 On-Device Translation Engine)
-- **Amended By:** [ADR-008](ADR-008-consolidated-engine-architecture-and-shared-detection.md) (Detector decoupled to shared gateway layer; dynamic TranslatorRegistry for Google Translate and LLM Text)
+- **Amended By:** [ADR-008](ADR-008-consolidated-engine-architecture-and-shared-detection.md) (Detector decoupled to shared gateway layer), [ADR-017](ADR-017-ocr-consolidation-and-directml-rapidocr.md) (OCR consolidated on DirectML RapidOCR; non-functional MangaOCR stub deprecated and purged)
 - **Relevant Skills:** `documentation-and-adrs`, `research`, `api-and-interface-design`, `performance-optimization`
+
+> [!NOTE]
+> **Amendment Notice (2026-10-26):** The dual-OCR strategy outlined in Option 3A below was amended by [ADR-017](ADR-017-ocr-consolidation-and-directml-rapidocr.md). Due to lack of CUDA support on the AMD Radeon 780M iGPU and extreme CPU latency of PyTorch MangaOCR (~25s/page), all OCR tasks across Japanese, English, Korean, and Chinese were consolidated into `RapidOCRAdapter` running under DirectML GPU acceleration (<500ms).
+
 
 ---
 

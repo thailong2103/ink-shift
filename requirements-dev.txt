@@ -1,0 +1,6 @@
+# InkShift Developer and Testing Dependencies
+-r requirements.txt
+pytest>=8.0.0
+pytest-asyncio>=0.23.0
+pytest-subtests>=0.12.0
+pytest-cov>=4.1.0

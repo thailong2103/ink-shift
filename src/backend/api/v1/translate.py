@@ -131,6 +131,8 @@ async def translate_page(
     # 3. Resolve target engine
     if payload.engine == "auto":
         target_engine_name = settings.inkshift_default_engine
+        if target_engine_name == "auto":
+            target_engine_name = registry.get_default().name
     else:
         target_engine_name = payload.engine
 
