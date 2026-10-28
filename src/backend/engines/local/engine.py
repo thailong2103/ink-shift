@@ -217,10 +217,18 @@ class LocalTranslationEngine(BaseTranslationEngine):
                 blocks=len(blocks),
             )
         )
+        is_fallback = getattr(translated_texts, "is_fallback", False)
+        # Additional safety heuristic: if all dialogue strings longer than 3 chars are identical, mark fallback
+        if not is_fallback and len(valid_raw_texts) > 0 and request.target_lang == "vi" and request.source_lang in ("en", "ja", "zh", "ko"):
+            meaningful = [(r.strip(), t.strip()) for r, t in zip(valid_raw_texts, translated_texts) if len(r.strip()) > 3]
+            if meaningful and all(r.lower() == t.lower() for r, t in meaningful):
+                is_fallback = True
+
         return TranslationResponse(
             page_hash=page_hash,
             engine_used=self._name,
             execution_time_ms=elapsed_ms,
             from_cache=False,
+            is_fallback=is_fallback,
             blocks=blocks,
         )

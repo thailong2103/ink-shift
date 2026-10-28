@@ -136,21 +136,34 @@ async def translate_page(
     else:
         target_engine_name = payload.engine
 
+    target_translator = payload.translator or "default"
+
     # 4. Check SQLite cache unless force_refresh is requested
     if not payload.force_refresh:
         cached_result: TranslationResponse | None = await cache.get(
             image_hash=page_hash,
             target_lang=payload.target_lang,
             engine_used=target_engine_name,
+            translator_used=target_translator,
         )
         if cached_result is not None:
             logger.info(
-                format_logfmt("CacheHit", hash=page_hash[:16], engine=target_engine_name)
+                format_logfmt(
+                    "CacheHit",
+                    hash=page_hash[:16],
+                    engine=target_engine_name,
+                    translator=target_translator,
+                )
             )
             return cached_result.model_copy(update={"from_cache": True})
 
     logger.info(
-        format_logfmt("CacheMiss", hash=page_hash[:16], engine=target_engine_name)
+        format_logfmt(
+            "CacheMiss",
+            hash=page_hash[:16],
+            engine=target_engine_name,
+            translator=target_translator,
+        )
     )
 
     # In-flight task deduplication (Singleflight pattern)
@@ -241,13 +254,25 @@ async def translate_page(
             )
         )
 
-        # 6. Persist response to cache
-        await cache.set(
-            image_hash=page_hash,
-            target_lang=payload.target_lang,
-            response=response,
-            engine_used=response.engine_used,
-        )
+        # 6. Persist response to cache ONLY if not a fallback preserving untranslated text
+        if not response.is_fallback:
+            await cache.set(
+                image_hash=page_hash,
+                target_lang=payload.target_lang,
+                response=response,
+                engine_used=response.engine_used,
+                translator_used=target_translator,
+            )
+        else:
+            logger.warning(
+                format_logfmt(
+                    "CacheBypassFallback",
+                    hash=page_hash[:16],
+                    engine=response.engine_used,
+                    translator=target_translator,
+                    reason="Response is fallback preserving untranslated text",
+                )
+            )
 
         if not future.done():
             future.set_result(response)

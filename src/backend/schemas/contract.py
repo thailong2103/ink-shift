@@ -184,6 +184,10 @@ class TranslationResponse(BaseModel):
         default=False,
         description="Indicates whether result was served from SQLite cache",
     )
+    is_fallback: bool = Field(
+        default=False,
+        description="Indicates whether translation failed and preserved untranslated source text",
+    )
     blocks: list[TranslatedBlock] = Field(
         default_factory=list,
         description="List of detected and translated text blocks",

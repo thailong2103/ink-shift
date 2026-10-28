@@ -30,6 +30,7 @@ async def get_cached_translation(
     image_hash: HashString,
     target_lang: str = Query(default="vi", description="Target language code"),
     engine: str | None = Query(default=None, description="Optional engine mode used ('local', 'cloud')"),
+    translator: str | None = Query(default=None, description="Optional translator mode used"),
 ) -> TranslationResponse | JSONResponse:
     """Retrieve pre-computed translation by image_hash and target_lang without re-uploading image."""
     logger.debug(
@@ -38,11 +39,15 @@ async def get_cached_translation(
             hash=image_hash[:16],
             target_lang=target_lang,
             engine=engine or "any",
+            translator=translator or "any",
         )
     )
     cache: TranslationCache = request.app.state.cache
     cached_response: TranslationResponse | None = await cache.get(
-        image_hash=image_hash, target_lang=target_lang, engine_used=engine
+        image_hash=image_hash,
+        target_lang=target_lang,
+        engine_used=engine,
+        translator_used=translator,
     )
 
     if cached_response is None:
@@ -59,3 +64,51 @@ async def get_cached_translation(
 
     logger.debug(format_logfmt("CacheHit", hash=image_hash[:16]))
     return cached_response.model_copy(update={"from_cache": True})
+
+
+@router.delete(
+    "/cache",
+    responses={
+        200: {"description": "Cache cleared successfully"},
+        400: {"model": APIErrorResponse, "description": "Invalid delete parameters"},
+    },
+)
+async def delete_cached_translation(
+    request: Request,
+    all: bool = Query(default=False, description="Clear entire translation cache if true"),
+    image_hash: str | None = Query(default=None, description="Specific image hash to delete"),
+    target_lang: str | None = Query(default=None, description="Optional target language filter"),
+    engine: str | None = Query(default=None, description="Optional engine filter"),
+) -> JSONResponse:
+    """Delete all cached translations or specific entry by image_hash."""
+    cache: TranslationCache = request.app.state.cache
+    if all:
+        deleted_count = await cache.clear()
+        logger.info(format_logfmt("CacheWiped", count=deleted_count))
+        return JSONResponse(
+            status_code=200,
+            content={"success": True, "deleted": deleted_count, "scope": "all"},
+        )
+
+    if image_hash:
+        deleted_count = await cache.delete(
+            image_hash=image_hash,
+            target_lang=target_lang,
+            engine_used=engine,
+        )
+        logger.info(format_logfmt("CacheEntryDeleted", hash=image_hash[:16], count=deleted_count))
+        return JSONResponse(
+            status_code=200,
+            content={"success": True, "deleted": deleted_count, "scope": "hash"},
+        )
+
+    return JSONResponse(
+        status_code=400,
+        content=APIErrorResponse(
+            success=False,
+            error=APIErrorDetail(
+                code="INVALID_CACHE_DELETE_REQUEST",
+                message="Either 'all=true' or 'image_hash' must be provided",
+            ),
+        ).model_dump(),
+    )

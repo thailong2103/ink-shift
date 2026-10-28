@@ -30,10 +30,10 @@ class TranslationCache:
                 cols = await cursor.fetchall()
 
             if cols:
-                # Table exists; verify if engine_used is part of the primary key
-                engine_col = [c for c in cols if c[1] == "engine_used"]
-                if engine_col and engine_col[0][5] == 0:
-                    logger.info("Migrating translation_cache to include engine_used in PRIMARY KEY")
+                # Table exists; verify if translator_used column exists
+                trans_col = [c for c in cols if c[1] == "translator_used"]
+                if not trans_col:
+                    logger.info("Migrating translation_cache to include translator_used in PRIMARY KEY")
                     await db.execute("ALTER TABLE translation_cache RENAME TO translation_cache_old;")
                     await db.execute(
                         """
@@ -41,17 +41,18 @@ class TranslationCache:
                             image_hash TEXT NOT NULL,
                             target_lang TEXT NOT NULL,
                             engine_used TEXT NOT NULL,
+                            translator_used TEXT NOT NULL,
                             response_json TEXT NOT NULL,
                             created_at INTEGER NOT NULL,
-                            PRIMARY KEY (image_hash, target_lang, engine_used)
+                            PRIMARY KEY (image_hash, target_lang, engine_used, translator_used)
                         );
                         """
                     )
                     await db.execute(
                         """
                         INSERT OR IGNORE INTO translation_cache 
-                        (image_hash, target_lang, engine_used, response_json, created_at)
-                        SELECT image_hash, target_lang, engine_used, response_json, created_at 
+                        (image_hash, target_lang, engine_used, translator_used, response_json, created_at)
+                        SELECT image_hash, target_lang, engine_used, 'default', response_json, created_at 
                         FROM translation_cache_old;
                         """
                     )
@@ -63,17 +64,18 @@ class TranslationCache:
                         image_hash TEXT NOT NULL,
                         target_lang TEXT NOT NULL,
                         engine_used TEXT NOT NULL,
+                        translator_used TEXT NOT NULL,
                         response_json TEXT NOT NULL,
                         created_at INTEGER NOT NULL,
-                        PRIMARY KEY (image_hash, target_lang, engine_used)
+                        PRIMARY KEY (image_hash, target_lang, engine_used, translator_used)
                     );
                     """
                 )
 
             await db.execute(
                 """
-                CREATE INDEX IF NOT EXISTS idx_cache_hash_lang_engine 
-                ON translation_cache(image_hash, target_lang, engine_used);
+                CREATE INDEX IF NOT EXISTS idx_cache_hash_lang_engine_trans 
+                ON translation_cache(image_hash, target_lang, engine_used, translator_used);
                 """
             )
             await db.commit()
@@ -94,18 +96,26 @@ class TranslationCache:
         image_hash: str,
         target_lang: str,
         engine_used: str | None = None,
+        translator_used: str | None = None,
     ) -> TranslationResponse | None:
-        """Retrieve cached TranslationResponse by image_hash, target_lang, and optionally engine_used.
+        """Retrieve cached TranslationResponse by image_hash, target_lang, and optionally engine/translator.
 
         Returns None if not found in cache.
         """
         async with aiosqlite.connect(self.db_path) as db:
-            if engine_used is not None:
+            if engine_used is not None and translator_used is not None:
                 query = (
                     "SELECT response_json FROM translation_cache "
-                    "WHERE image_hash = ? AND target_lang = ? AND engine_used = ?;"
+                    "WHERE image_hash = ? AND target_lang = ? AND engine_used = ? AND translator_used = ?;"
                 )
-                params: tuple[str, ...] = (image_hash, target_lang, engine_used)
+                params: tuple[str, ...] = (image_hash, target_lang, engine_used, translator_used)
+            elif engine_used is not None:
+                query = (
+                    "SELECT response_json FROM translation_cache "
+                    "WHERE image_hash = ? AND target_lang = ? AND engine_used = ? "
+                    "ORDER BY created_at DESC LIMIT 1;"
+                )
+                params = (image_hash, target_lang, engine_used)
             else:
                 query = (
                     "SELECT response_json FROM translation_cache "
@@ -118,19 +128,21 @@ class TranslationCache:
                 row = await cursor.fetchone()
                 if row is None:
                     logger.debug(
-                        "Cache MISS for hash='%s' (target: %s, engine: %s)",
+                        "Cache MISS for hash='%s' (target: %s, engine: %s, translator: %s)",
                         image_hash,
                         target_lang,
                         engine_used or "any",
+                        translator_used or "any",
                     )
                     return None
 
                 parsed = TranslationResponse.model_validate_json(row[0])
                 logger.debug(
-                    "Cache HIT for hash='%s' (target: %s, engine: %s, payload: %d bytes)",
+                    "Cache HIT for hash='%s' (target: %s, engine: %s, translator: %s, payload: %d bytes)",
                     image_hash,
                     target_lang,
                     parsed.engine_used,
+                    translator_used or "any",
                     len(row[0]),
                 )
                 return parsed.model_copy(update={"from_cache": True})
@@ -141,30 +153,71 @@ class TranslationCache:
         target_lang: str,
         response: TranslationResponse,
         engine_used: str | None = None,
+        translator_used: str | None = None,
     ) -> None:
         """Store or update a TranslationResponse in the cache."""
         resolved_engine = engine_used or response.engine_used
+        resolved_translator = translator_used or "default"
         payload = response.model_dump_json()
         logger.debug(
-            "Cache STORE for hash='%s' (target: %s, engine: %s, payload: %d bytes)",
+            "Cache STORE for hash='%s' (target: %s, engine: %s, translator: %s, payload: %d bytes)",
             image_hash,
             target_lang,
             resolved_engine,
+            resolved_translator,
             len(payload),
         )
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute(
                 """
                 INSERT OR REPLACE INTO translation_cache 
-                (image_hash, target_lang, engine_used, response_json, created_at)
-                VALUES (?, ?, ?, ?, ?);
+                (image_hash, target_lang, engine_used, translator_used, response_json, created_at)
+                VALUES (?, ?, ?, ?, ?, ?);
                 """,
                 (
                     image_hash,
                     target_lang,
                     resolved_engine,
+                    resolved_translator,
                     payload,
                     int(time.time()),
                 ),
             )
             await db.commit()
+
+    async def delete(
+        self,
+        image_hash: str,
+        target_lang: str | None = None,
+        engine_used: str | None = None,
+    ) -> int:
+        """Delete specific cached translation entries matching criteria."""
+        async with aiosqlite.connect(self.db_path) as db:
+            conditions = ["image_hash = ?"]
+            params: list[str] = [image_hash]
+            if target_lang is not None:
+                conditions.append("target_lang = ?")
+                params.append(target_lang)
+            if engine_used is not None:
+                conditions.append("engine_used = ?")
+                params.append(engine_used)
+
+            query = f"DELETE FROM translation_cache WHERE {' AND '.join(conditions)};"
+            cursor = await db.execute(query, tuple(params))
+            deleted = cursor.rowcount
+            await db.commit()
+            logger.info("Deleted %d cache entries for hash %s", deleted, image_hash[:16])
+            return deleted
+
+    async def clear(self) -> int:
+        """Clear all entries in translation cache, returning count of deleted records."""
+        async with aiosqlite.connect(self.db_path) as db:
+            async with db.execute("SELECT COUNT(*) FROM translation_cache;") as cursor:
+                row = await cursor.fetchone()
+                count = row[0] if row else 0
+
+            await db.execute("DELETE FROM translation_cache;")
+            await db.execute("PRAGMA wal_checkpoint(TRUNCATE);")
+            await db.commit()
+            logger.info("Cleared entire translation cache (%d records deleted)", count)
+            return count

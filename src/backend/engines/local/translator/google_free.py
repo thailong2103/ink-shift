@@ -7,6 +7,7 @@ import importlib
 from collections.abc import Callable
 from typing import Any
 
+from src.backend.engines.local.translator.base import TranslationBatch
 from src.backend.logging import get_logger
 
 logger = get_logger("translator.google")
@@ -271,13 +272,15 @@ class GoogleFreeTranslator:
                 )
 
         # Final safety net: Preserve source strings if all free web providers are unreachable
+        is_fallback = False
         if translated_subset is None:
             translated_subset = to_translate
+            is_fallback = True
 
         # Re-assemble complete output preserving original empty/whitespace entries
         results = list(texts)
         for idx, trans in zip(non_empty_indices, translated_subset):
             results[idx] = trans
 
-        logger.debug("translate_batch completed: %d items translated", len(results))
-        return results
+        logger.debug("translate_batch completed: %d items translated (is_fallback=%s)", len(results), is_fallback)
+        return TranslationBatch(results, is_fallback=is_fallback)

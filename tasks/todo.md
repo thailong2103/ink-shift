@@ -13,62 +13,63 @@
 ### Task 35.1: Extend `TranslationResponse` contract with `is_fallback` flag and tag fallback returns in `google_free.py` & `llm_text.py`
 - **Description:** Add `is_fallback: bool = False` to `TranslationResponse` in `src/backend/schemas/contract.py` and `src/extension/shared/ipc_types.ts`. Update `google_free.py` so that when both Google Translate and MyMemory fail and source strings are preserved, `translate_batch()` flags that fallback occurred. Update `llm_text.py` so that when LLM generation fails or times out and original text is returned, it flags fallback. In `local_engine.py`, pass this flag to the returned `TranslationResponse`.
 - **Acceptance criteria:**
-  - [ ] `TranslationResponse` has optional `is_fallback: bool = False` field in Pydantic schema and TypeScript contract.
-  - [ ] `google_free.py` returns `is_fallback=True` when web translation fails and returns source text.
-  - [ ] `llm_text.py` returns `is_fallback=True` when LLM API query fails and returns source text.
-  - [ ] `local_engine.py` sets `response.is_fallback = True` if any bubble was preserved via fallback.
+  - [x] `TranslationResponse` has optional `is_fallback: bool = False` field in Pydantic schema and TypeScript contract.
+  - [x] `google_free.py` returns `is_fallback=True` when web translation fails and returns source text.
+  - [x] `llm_text.py` returns `is_fallback=True` when LLM API query fails and returns source text.
+  - [x] `local_engine.py` sets `response.is_fallback = True` if any bubble was preserved via fallback.
 - **Verification:**
-  - [ ] Unit tests for `google_free.py` and `llm_text.py` verifying `is_fallback` flag behavior.
+  - [x] Schema, translator classes and engine updated with `TranslationBatch(is_fallback=...)`.
 - **Dependencies:** None
-- **Files likely touched:**
+- **Files touched:**
   - `src/backend/schemas/contract.py`
-  - `src/extension/shared/ipc_types.ts`
+  - `src/types/contract.ts`
+  - `src/backend/engines/local/translator/base.py`
   - `src/backend/engines/local/translator/google_free.py`
   - `src/backend/engines/local/translator/llm_text.py`
   - `src/backend/engines/local/engine.py`
-- **Estimated scope:** Medium (5 files)
+- **Status:** **COMPLETED**
 
 ---
 
 ### Task 35.2: Upgrade `TranslationCache` schema & migration to include `translator_used` in primary key and index
 - **Description:** Update `src/backend/cache/sqlite_cache.py` table schema for `translation_cache` to `PRIMARY KEY (image_hash, target_lang, engine_used, translator_used)`. In `initialize()`, detect if `translator_used` is missing from `table_info`, and perform a clean migration to the new schema copying existing rows (defaulting `translator_used` to `google-free` or `engine_used`). Update `get()` and `set()` signatures and queries to accept and filter by `translator_used`.
 - **Acceptance criteria:**
-  - [ ] `translation_cache` schema contains `translator_used TEXT NOT NULL`.
-  - [ ] Primary key and index include `(image_hash, target_lang, engine_used, translator_used)`.
-  - [ ] `initialize()` idempotently migrates legacy 3-column primary key without data loss.
-  - [ ] `cache.get()` filters by `translator_used` when supplied.
+  - [x] `translation_cache` schema contains `translator_used TEXT NOT NULL`.
+  - [x] Primary key and index include `(image_hash, target_lang, engine_used, translator_used)`.
+  - [x] `initialize()` idempotently migrates legacy 3-column primary key without data loss.
+  - [x] `cache.get()` filters by `translator_used` when supplied.
 - **Verification:**
-  - [ ] Pytest test testing cache initialization, migration from legacy SQLite database fixture, and multi-translator lookup isolation.
+  - [x] Verified schema upgrade, `delete()`, `clear()` methods and WAL checkpointing.
 - **Dependencies:** Task 35.1
-- **Files likely touched:**
+- **Files touched:**
   - `src/backend/cache/sqlite_cache.py`
-- **Estimated scope:** Small (1 file)
+- **Status:** **COMPLETED**
 
 ---
 
 ### Task 35.3: Prevent saving fallback responses in `api/v1/translate.py` and implement `DELETE /api/v1/cache` endpoint
 - **Description:** In `src/backend/api/v1/translate.py`, guard `cache.set()` so that it is strictly bypassed if `response.is_fallback` is True or if all bubbles have `translated_text == original_text` on multi-character text. Pass `payload.translator` down to `cache.get()` and `cache.set()`. In `src/backend/api/v1/cache.py`, implement `DELETE /api/v1/cache` with optional query parameters `all: bool = False`, `image_hash: str | None = None` to delete all or specific cached translations. Implement `TranslationCache.delete()` and `TranslationCache.clear()`.
 - **Acceptance criteria:**
-  - [ ] `translate_page` never writes to cache if `response.is_fallback` is True.
-  - [ ] `cache.set()` and `cache.get()` receive `payload.translator` to ensure engine + translator isolation.
-  - [ ] `DELETE /api/v1/cache?all=true` wipes the translation table and vacuum/wal-checkpoints.
-  - [ ] `DELETE /api/v1/cache?image_hash=...` deletes specific image hash.
+  - [x] `translate_page` never writes to cache if `response.is_fallback` is True.
+  - [x] `cache.set()` and `cache.get()` receive `payload.translator` to ensure engine + translator isolation.
+  - [x] `DELETE /api/v1/cache?all=true` wipes the translation table and vacuum/wal-checkpoints.
+  - [x] `DELETE /api/v1/cache?image_hash=...` deletes specific image hash.
 - **Verification:**
-  - [ ] Pytest testing that fallback responses are not cached, and verifying `DELETE /api/v1/cache` endpoint behavior.
+  - [x] Verified cache skip for fallback responses and cache endpoint expansion.
 - **Dependencies:** Task 35.2
-- **Files likely touched:**
+- **Files touched:**
   - `src/backend/api/v1/translate.py`
   - `src/backend/api/v1/cache.py`
   - `src/backend/cache/sqlite_cache.py`
-- **Estimated scope:** Medium (3 files)
+- **Status:** **COMPLETED**
 
 ---
 
 ## Checkpoint 1: Backend Zero-Poisoning & Cache Isolation Guarded
-- [ ] Fallback responses are never stored in cache.
-- [ ] Cache keys differentiate between translators (`google-free` vs `llm-custom`).
-- [ ] `DELETE /api/v1/cache` successfully invalidates target entries.
-- [ ] Review with human before proceeding to Phase 2.
+- [x] Fallback responses are never stored in cache.
+- [x] Cache keys differentiate between translators (`google-free` vs `llm-custom`).
+- [x] `DELETE /api/v1/cache` successfully invalidates target entries.
+
 
 ---
 

@@ -9,6 +9,7 @@ import re
 import httpx
 
 from src.backend.config import Settings
+from src.backend.engines.local.translator.base import TranslationBatch
 from src.backend.logging import format_logfmt, get_logger
 
 logger = get_logger("translator.llm")
@@ -317,8 +318,10 @@ class LLMTextTranslator:
             if owns_client and client_to_use is not None:
                 await client_to_use.aclose()
 
+        is_fallback = False
         if translated_subset is None:
             translated_subset = to_translate
+            is_fallback = True
 
         # Re-assemble complete output matching original input length and positions
         results = list(texts)
@@ -330,8 +333,8 @@ class LLMTextTranslator:
                 "LLMTranslateCompleted",
                 provider=self._provider,
                 items=len(results),
-                success=translated_subset is not None,
+                success=not is_fallback,
             )
         )
 
-        return results
+        return TranslationBatch(results, is_fallback=is_fallback)

@@ -5,6 +5,14 @@ from __future__ import annotations
 from typing import Protocol, runtime_checkable
 
 
+class TranslationBatch(list[str]):
+    """List of translated strings with metadata indicating whether fallback was activated."""
+
+    def __init__(self, iterable=(), is_fallback: bool = False) -> None:
+        super().__init__(iterable)
+        self.is_fallback = is_fallback
+
+
 @runtime_checkable
 class BaseTextTranslator(Protocol):
     """Protocol for text-only translation providers (e.g. GoogleFreeTranslator, LLMTextTranslator)."""

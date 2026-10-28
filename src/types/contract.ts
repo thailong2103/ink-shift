@@ -71,6 +71,7 @@ export interface TranslationResponse {
   engine_used: string;
   execution_time_ms: number;
   from_cache: boolean;
+  is_fallback?: boolean;
   blocks: TranslatedBlock[];
 }
 
