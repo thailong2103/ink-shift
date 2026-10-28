@@ -520,8 +520,8 @@ export function serializeImageElementToDataUrl(img: HTMLImageElement): string | 
     }
     ctx.drawImage(img, 0, 0, width, height);
     return canvas.toDataURL('image/jpeg', 0.92);
-  } catch (err) {
-    logger.warn('Failed to serialize image element to DataURL via canvas:', err);
+  } catch (err: unknown) {
+    logger.warn(`Failed to serialize image element to DataURL via canvas: ${err instanceof Error ? err.message : String(err)}`);
     return null;
   }
 }
