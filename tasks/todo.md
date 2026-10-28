@@ -1,262 +1,218 @@
-# Tasks: Zero-Friction 1-Click Launch & Out-of-the-Box User Experience (Phase 31)
+# Tasks: Cache Poisoning Elimination, Rescan Blob-Bypass & Purge Cache Controls (Phase 35)
 
-> **Module ID:** `zero-friction-launcher-and-onboarding`  
+> **Module ID:** `cache-poisoning-rescan-blob-bypass-and-purge-cache`  
 > **Source Plan:** [tasks/plan.md](plan.md)  
-> **Governing Skills:** `planning-and-task-breakdown`, `debugging-and-error-recovery`, `constraint-driven-development`  
-> **Quality Gate:** [CONSTRAINTS.md](../CONSTRAINTS.md) (Zero test suppression, 100% test parity, strict error bounding)  
-> **Execution Status:** **COMPLETED & VERIFIED (Phase 31 Finished, 100% Tests Pass)**
+> **Governing Skills:** `planning-and-task-breakdown`, `doubt-driven-development`, `performance-optimization`, `debugging-and-error-recovery`  
+> **Quality Gate:** [CONSTRAINTS.md](../CONSTRAINTS.md) (Zero test suppression, 100% test parity, zero regression)  
+> **Execution Status:** **READY FOR EXECUTION (Phase 35 Planned)**
 
 ---
 
-## Phase 1: Launcher Hardening (`start.bat`) & Dependency Integrity
+## Phase 1: Backend Zero-Poisoning Policy & Cache Key Granularity
 
-### Task 31.1: Fix environment priority inversion & deep dependency verification in `start.bat`
-- **Description:** Refactor `start.bat` to eliminate the Python priority inversion. Prioritize `.venv\Scripts\python.exe` first. Replace shallow check `python -c "import fastapi, uvicorn"` with a deep dependency probe checking all essential backend & AI modules (`fastapi`, `uvicorn`, `aiosqlite`, `onnxruntime`, `cv2`, `deep_translator`). If any dependency is absent, automatically route to `pip install -r requirements.txt`.
+### Task 35.1: Extend `TranslationResponse` contract with `is_fallback` flag and tag fallback returns in `google_free.py` & `llm_text.py`
+- **Description:** Add `is_fallback: bool = False` to `TranslationResponse` in `src/backend/schemas/contract.py` and `src/extension/shared/ipc_types.ts`. Update `google_free.py` so that when both Google Translate and MyMemory fail and source strings are preserved, `translate_batch()` flags that fallback occurred. Update `llm_text.py` so that when LLM generation fails or times out and original text is returned, it flags fallback. In `local_engine.py`, pass this flag to the returned `TranslationResponse`.
 - **Acceptance criteria:**
-  - [x] `.venv` environment checked before system `python` or `py`.
-  - [x] Deep dependency check tests for `fastapi`, `uvicorn`, `aiosqlite`, `onnxruntime`, `cv2`, `deep_translator`.
-  - [x] Missing dependency properly triggers virtual environment setup and full `pip install -r requirements.txt`.
+  - [ ] `TranslationResponse` has optional `is_fallback: bool = False` field in Pydantic schema and TypeScript contract.
+  - [ ] `google_free.py` returns `is_fallback=True` when web translation fails and returns source text.
+  - [ ] `llm_text.py` returns `is_fallback=True` when LLM API query fails and returns source text.
+  - [ ] `local_engine.py` sets `response.is_fallback = True` if any bubble was preserved via fallback.
 - **Verification:**
-  - [x] Test execution in a Python environment lacking `onnxruntime` to ensure it does not bypass package installation.
+  - [ ] Unit tests for `google_free.py` and `llm_text.py` verifying `is_fallback` flag behavior.
 - **Dependencies:** None
 - **Files likely touched:**
-  - `start.bat`
+  - `src/backend/schemas/contract.py`
+  - `src/extension/shared/ipc_types.ts`
+  - `src/backend/engines/local/translator/google_free.py`
+  - `src/backend/engines/local/translator/llm_text.py`
+  - `src/backend/engines/local/engine.py`
+- **Estimated scope:** Medium (5 files)
+
+---
+
+### Task 35.2: Upgrade `TranslationCache` schema & migration to include `translator_used` in primary key and index
+- **Description:** Update `src/backend/cache/sqlite_cache.py` table schema for `translation_cache` to `PRIMARY KEY (image_hash, target_lang, engine_used, translator_used)`. In `initialize()`, detect if `translator_used` is missing from `table_info`, and perform a clean migration to the new schema copying existing rows (defaulting `translator_used` to `google-free` or `engine_used`). Update `get()` and `set()` signatures and queries to accept and filter by `translator_used`.
+- **Acceptance criteria:**
+  - [ ] `translation_cache` schema contains `translator_used TEXT NOT NULL`.
+  - [ ] Primary key and index include `(image_hash, target_lang, engine_used, translator_used)`.
+  - [ ] `initialize()` idempotently migrates legacy 3-column primary key without data loss.
+  - [ ] `cache.get()` filters by `translator_used` when supplied.
+- **Verification:**
+  - [ ] Pytest test testing cache initialization, migration from legacy SQLite database fixture, and multi-translator lookup isolation.
+- **Dependencies:** Task 35.1
+- **Files likely touched:**
+  - `src/backend/cache/sqlite_cache.py`
 - **Estimated scope:** Small (1 file)
 
 ---
 
-### Task 31.2: Add port 8000 pre-flight guard & strict model download error bounding in `start.bat`
-- **Description:** Add pre-flight network socket check to detect if port 8000 is already bound by an orphaned Python process, preventing crash `[Errno 10048] address already in use`. Add strict `if errorlevel 1` validation after invoking `scripts\download_models.py` with friendly error instructions if model download fails.
+### Task 35.3: Prevent saving fallback responses in `api/v1/translate.py` and implement `DELETE /api/v1/cache` endpoint
+- **Description:** In `src/backend/api/v1/translate.py`, guard `cache.set()` so that it is strictly bypassed if `response.is_fallback` is True or if all bubbles have `translated_text == original_text` on multi-character text. Pass `payload.translator` down to `cache.get()` and `cache.set()`. In `src/backend/api/v1/cache.py`, implement `DELETE /api/v1/cache` with optional query parameters `all: bool = False`, `image_hash: str | None = None` to delete all or specific cached translations. Implement `TranslationCache.delete()` and `TranslationCache.clear()`.
 - **Acceptance criteria:**
-  - [x] Port 8000 conflict is detected before launching Uvicorn, with a clear warning and action suggestion.
-  - [x] Model weights download validates exit code and aborts gracefully if network fails or file is corrupt.
+  - [ ] `translate_page` never writes to cache if `response.is_fallback` is True.
+  - [ ] `cache.set()` and `cache.get()` receive `payload.translator` to ensure engine + translator isolation.
+  - [ ] `DELETE /api/v1/cache?all=true` wipes the translation table and vacuum/wal-checkpoints.
+  - [ ] `DELETE /api/v1/cache?image_hash=...` deletes specific image hash.
 - **Verification:**
-  - [x] Validate batch script control flow with simulated errors.
-- **Dependencies:** Task 31.1
+  - [ ] Pytest testing that fallback responses are not cached, and verifying `DELETE /api/v1/cache` endpoint behavior.
+- **Dependencies:** Task 35.2
 - **Files likely touched:**
-  - `start.bat`
+  - `src/backend/api/v1/translate.py`
+  - `src/backend/api/v1/cache.py`
+  - `src/backend/cache/sqlite_cache.py`
+- **Estimated scope:** Medium (3 files)
+
+---
+
+## Checkpoint 1: Backend Zero-Poisoning & Cache Isolation Guarded
+- [ ] Fallback responses are never stored in cache.
+- [ ] Cache keys differentiate between translators (`google-free` vs `llm-custom`).
+- [ ] `DELETE /api/v1/cache` successfully invalidates target entries.
+- [ ] Review with human before proceeding to Phase 2.
+
+---
+
+## Phase 2: Extension Core Rescan & MangaDex `blob:` URL Handler
+
+### Task 35.4: Implement Canvas/Manifest serialization in `content_script.ts` for `blob:` URLs
+- **Description:** In `src/extension/content/content_script.ts`, update `translateImageElement` to inspect `rawUrl`. If `rawUrl` starts with `blob:`, attempt to resolve the canonical HTTPS image URL from `activeManifest.pages[currentPage - 1]?.url`. If no manifest URL is available or manifest is pending, use an off-screen `<canvas>` context to serialize the image element via `canvas.toDataURL('image/jpeg', 0.92)`. Send the resolved HTTP URL or Base64 data URL in `TRANSLATE_IMAGE` payload, preventing Service Worker fetch failures on isolated blob contexts.
+- **Acceptance criteria:**
+  - [ ] When image URL is `blob:`, it resolves either via `activeManifest` CDN URL or off-screen Canvas Base64 conversion.
+  - [ ] Service worker receives valid HTTP URL or Base64 data URI, avoiding `Failed to fetch` errors.
+  - [ ] Graceful fallback to raw URL if canvas read fails.
+- **Verification:**
+  - [ ] Vitest unit test in `tests/extension/` verifying blob URL handling and canvas conversion fallback.
+- **Dependencies:** Task 35.3
+- **Files likely touched:**
+  - `src/extension/content/content_script.ts`
 - **Estimated scope:** Small (1 file)
 
 ---
 
-## Checkpoint: Launcher Hardened
-- [x] Priority inversion resolved in `start.bat`
-- [x] Deep dependency check active
-- [x] Port socket collisions and network failure bounded
-- [x] Review with human before proceeding to Phase 2
-
----
-
-## Phase 2: Frictionless Default Configuration & Portable Extension Packaging
-
-### Task 31.3: Update `.env.example` with zero-friction local/free defaults
-- **Description:** Adjust default configuration settings in `.env.example` so that a newly cloned repository works immediately without requiring paid or third-party cloud API credentials. Set default engine to `local` (`INKSHIFT_DEFAULT_ENGINE=local`), OCR to `auto` (`INKSHIFT_LOCAL_DEFAULT_OCR=auto`), and translator to `google-free` (`INKSHIFT_LOCAL_DEFAULT_TRANSLATOR=google-free`).
+### Task 35.5: Synchronize `forceRefresh` through `PrefetchScheduler` on `RESCAN_PAGE` events
+- **Description:** In `src/extension/content/prefetch_scheduler.ts`, add a method `resetForRescan(pageNumber: number)` or update `onPageChange(pageNumber, forceRefresh)` that cancels active lookahead tasks, clears in-memory caches, and schedules the immediate window with `forceRefresh: true`. In `content_script.ts` line 1163 (`RESCAN_PAGE` message handler), await `loadConfigFromStorage()`, call scheduler rescan reset, and ensure the current page is dispatched with `forceRefresh: true` through both DOM and prefetch pipelines.
 - **Acceptance criteria:**
-  - [x] `.env.example` default engine is `local`.
-  - [x] Default translator is `google-free` requiring zero API keys.
-  - [x] Clear comments preserved for optional Gemini/OpenAI cloud configuration.
+  - [ ] `RESCAN_PAGE` properly resets `PrefetchScheduler` task queue.
+  - [ ] Immediate page prefetch task passes `forceRefresh: true` to background Service Worker.
+  - [ ] In-memory translation caches (`translationCacheByUrl`, `translationCacheByPage`) are cleanly invalidated.
 - **Verification:**
-  - [x] Inspect generated `.env` on fresh setup; verify backend starts in local engine mode.
-- **Dependencies:** None
+  - [ ] Vitest test simulating `RESCAN_PAGE` and verifying `forceRefresh: true` is propagated to background messages.
+- **Dependencies:** Task 35.4
 - **Files likely touched:**
-  - `.env.example`
-- **Estimated scope:** Small (1 file)
-
----
-
-### Task 31.4: Implement `scripts/package_extension.py` and zip extraction fallback in `start.bat`
-- **Description:** Create a Python utility `scripts/package_extension.py` that packages the compiled `dist/` directory into a portable zip file (`inkshift-extension.zip`). Update `start.bat` so that if `dist/manifest.json` is missing and `npm` is unavailable, it checks for `inkshift-extension.zip` and automatically extracts it using Python or PowerShell, allowing users without Node.js to run the extension.
-- **Acceptance criteria:**
-  - [x] `scripts/package_extension.py` creates a clean zip bundle of `dist/`.
-  - [x] `start.bat` extracts pre-packaged extension if Node.js/npm is missing and `inkshift-extension.zip` exists.
-- **Verification:**
-  - [x] Run `python scripts/package_extension.py` and verify created zip file contents.
-- **Dependencies:** Task 31.2
-- **Files likely touched:**
-  - `scripts/package_extension.py`
-  - `start.bat`
+  - `src/extension/content/prefetch_scheduler.ts`
+  - `src/extension/content/content_script.ts`
 - **Estimated scope:** Small (2 files)
 
 ---
 
-## Checkpoint: Portable Distribution Ready
-- [x] Zero-friction defaults active in `.env.example`
-- [x] Extension packager and fallback extractor implemented
-- [x] Review with human before proceeding to Phase 3
+## Checkpoint 2: Extension Rescan & Blob Translation Guarded
+- [ ] MangaDex `blob:` images are converted/resolved before reaching Service Worker.
+- [ ] Re-scan propagates `forceRefresh: true` across all pipelines.
+- [ ] Review with human before proceeding to Phase 3.
 
 ---
 
-## Phase 3: Onboarding Automation & End-to-End Verification
+## Phase 3: Purge Cache UI & Management Controls
 
-### Task 31.5: Add browser auto-onboarding launcher trigger and friendly instructions in `start.bat`
-- **Description:** Enhance user onboarding at the end of `start.bat`. Upon launching Uvicorn, display a clear, formatted guide explaining exactly how to load the unpacked extension in Chrome (`chrome://extensions/` -> Enable Developer Mode -> Load Unpacked -> select `dist`). Provide an optional prompt or command to open the browser automatically to the gateway documentation page.
+### Task 35.6: Implement backend gateway `deleteCache()` method and IPC message `CLEAR_CACHE`
+- **Description:** In `src/extension/background/backend_gateway.ts`, add `clearCache(all: boolean = true, imageHash?: string): Promise<{ success: boolean; deleted: number }>`. In `src/extension/shared/ipc_types.ts`, add IPC message `{ type: 'CLEAR_CACHE'; payload?: { all?: boolean; imageHash?: string } }`. In `src/extension/background/service_worker.ts`, handle `CLEAR_CACHE` by calling `gateway.clearCache()` and returning typed response.
 - **Acceptance criteria:**
-  - [x] Step-by-step Chrome extension loading instructions clearly rendered in console.
-  - [x] Clear display of local server URL (`http://127.0.0.1:8000`) and OpenAPI Swagger documentation (`http://127.0.0.1:8000/docs`).
+  - [ ] `BackendGateway.clearCache()` sends `DELETE /api/v1/cache` with retry logic.
+  - [ ] `CLEAR_CACHE` IPC message and response types added to `ipc_types.ts`.
+  - [ ] `service_worker.ts` handles `CLEAR_CACHE` and returns deletion statistics.
 - **Verification:**
-  - [x] Run launcher and verify on-screen guidance formatting.
-- **Dependencies:** Task 31.4
+  - [ ] Vitest tests for `backend_gateway.ts` and `service_worker.ts` handling `CLEAR_CACHE`.
+- **Dependencies:** Task 35.5
 - **Files likely touched:**
-  - `start.bat`
-- **Estimated scope:** Small (1 file)
+  - `src/extension/background/backend_gateway.ts`
+  - `src/extension/shared/ipc_types.ts`
+  - `src/extension/background/service_worker.ts`
+- **Estimated scope:** Small (3 files)
 
 ---
 
-### Task 31.6: Run complete verification suite (Extension Vitest 250/250, Typecheck, Python tests)
-- **Description:** Validate full system integrity after all improvements. Rebuild the extension bundle with `npm run build:extension`, verify zero TypeScript errors with `npm run typecheck:extension`, run all 250 Vitest extension tests, and run backend pytest test suite to guarantee zero regressions.
+### Task 35.7: Add "Dọn dẹp bộ nhớ đệm (Clear Cache)" button & status indicator to Extension Popup (Settings Drawer)
+- **Description:** In `src/extension/popup/popup.html`, add a Cache Management row in the Settings Drawer / System Status card with a "Xóa bộ nhớ đệm (Clear Cache)" button and status text. In `src/extension/popup/popup.ts`, bind the button to prompt confirmation (via browser confirm or inline warning), send `CLEAR_CACHE` IPC to background, show success feedback with count of deleted entries, and trigger a tab re-scan if on a manga page.
 - **Acceptance criteria:**
-  - [x] `npm run build:extension` compiles without errors.
-  - [x] `npm run typecheck:extension` passes with 0 errors.
-  - [x] Vitest unit test suite passes 100% (250/250 tests).
-  - [x] Backend pytest suite passes 100% (303/303 tests).
+  - [ ] Clear Cache button rendered cleanly matching InkShift anti-slop dark UI aesthetics.
+  - [ ] Confirmation prompt prevents accidental bulk deletion.
+  - [ ] Success message displays cleared records count and updates status.
 - **Verification:**
-  - [x] Run `npm run build:extension`, `npm run typecheck:extension`, `npm run test:extension`, and `pytest`.
-- **Dependencies:** Tasks 31.1 - 31.5
+  - [ ] Vitest test for `popup.ts` verifying click handler dispatches `CLEAR_CACHE` and updates UI.
+- **Dependencies:** Task 35.6
 - **Files likely touched:**
-  - `dist/`
-- **Estimated scope:** Small (Verification only)
-
----
-
-## Checkpoint: Phase 31 Completed & Verified
-- [x] All 6 tasks completed and verified
-- [x] Extension fresh build verified and bundled
-- [x] Ready for human sign-off
-
----
-
-# Tasks: OCR Pipeline Consolidation & DirectML RapidOCR Standardization (Phase 32)
-
-> **Module ID:** `ocr-pipeline-consolidation`  
-> **Source Plan:** [tasks/plan.md](plan.md)  
-> **Governing Skills:** `planning-and-task-breakdown`, `debugging-and-error-recovery`, `documentation-and-adrs`, `test-driven-development`  
-> **Quality Gate:** [CONSTRAINTS.md](../CONSTRAINTS.md) (Zero regressions, sub-second latency on AMD 780M, no dead stubs)  
-> **Execution Status:** **PENDING HUMAN CONFIRMATION & EXECUTION**
-
----
-
-## Phase 1: Documentation & Architectural Governance
-
-### Task 32.1: Author ADR-017 and amend ADR-006
-- **Description:** Document the architectural consolidation of OCR to DirectML RapidOCR in `docs/decisions/ADR-017-ocr-consolidation-and-directml-rapidocr.md`. Amend `docs/decisions/ADR-006-local-engine-architecture.md` by marking status as `Accepted (Amended by ADR-008, ADR-017)` and adding reference banner, preserving historical context without deleting past deliberations.
-- **Acceptance criteria:**
-  - [x] `docs/decisions/ADR-017-ocr-consolidation-and-directml-rapidocr.md` authored following template with complete trade-off analysis.
-  - [x] `docs/decisions/ADR-006-local-engine-architecture.md` status updated and references ADR-017.
-- **Verification:**
-  - [x] Verify both markdown files render cleanly and follow repository ADR conventions.
-- **Dependencies:** None
-- **Files likely touched:**
-  - `docs/decisions/ADR-017-ocr-consolidation-and-directml-rapidocr.md`
-  - `docs/decisions/ADR-006-local-engine-architecture.md`
+  - `src/extension/popup/popup.html`
+  - `src/extension/popup/popup.ts`
 - **Estimated scope:** Small (2 files)
 
 ---
 
-### Task 32.2: Update Living Spec (`SPEC-local-engine.md`) & `docs/PROJECT_STATE.md`
-- **Description:** Synchronize the Living Spec `docs/specs/SPEC-local-engine.md` to reflect that RapidOCR (PP-OCRv4 ONNX DirectML) is the sole OCR engine for all languages. Update project structure tree, remove `manga_ocr.py`, update Mermaid flow diagrams, and update `docs/PROJECT_STATE.md` Architecture Decisions Index.
+## Checkpoint 3: Purge Cache Feature Complete
+- [ ] User can manually clear cache from extension popup.
+- [ ] Gateway communicates `DELETE /api/v1/cache` smoothly.
+- [ ] Review with human before proceeding to Phase 4.
+
+---
+
+## Phase 4: Full Verification, Regression Guards & Documentation
+
+### Task 35.8: Author backend unit & regression tests for `is_fallback`, cache isolation, and cache deletion
+- **Description:** Add comprehensive Pytest tests in `tests/backend/`:
+  1. Test that `google_free.py` and `llm_text.py` return `is_fallback=True` on failure.
+  2. Regression test asserting that `translate_page` does NOT write to cache when `response.is_fallback == True`.
+  3. Regression test asserting that `google-free` and `llm-custom` caches are isolated in SQLite under distinct keys.
+  4. Test that `DELETE /api/v1/cache` wipes table and returns HTTP 200.
 - **Acceptance criteria:**
-  - [x] `SPEC-local-engine.md` project tree and Mermaid diagram updated.
-  - [x] `docs/PROJECT_STATE.md` includes ADR-017 in index table.
+  - [ ] All new backend tests pass with 100% green status.
+  - [ ] Test coverage exceeds 80% on modified lines.
 - **Verification:**
-  - [x] Review Spec to ensure no lingering references to `manga_ocr.py` stub.
-- **Dependencies:** Task 32.1
+  - [ ] Run `pytest tests/backend/ -v`.
+- **Dependencies:** Task 35.7
 - **Files likely touched:**
-  - `docs/specs/SPEC-local-engine.md`
+  - `tests/backend/api/v1/test_translate.py`
+  - `tests/backend/cache/test_sqlite_cache.py`
+  - `tests/backend/api/v1/test_cache.py`
+- **Estimated scope:** Medium (3 files)
+
+---
+
+### Task 35.9: Author frontend Vitest unit & regression tests for blob handling and cache clearing
+- **Description:** Add Vitest tests in `tests/extension/`:
+  1. Test Canvas serialization fallback for `blob:` URLs in `content_script.test.ts`.
+  2. Test `RESCAN_PAGE` message handling properly setting `forceRefresh: true` and resetting prefetch tasks.
+  3. Test `CLEAR_CACHE` IPC dispatch and popup feedback rendering.
+- **Acceptance criteria:**
+  - [ ] All new frontend tests pass 100%.
+  - [ ] Zero TypeScript errors (`npm run typecheck:extension`).
+- **Verification:**
+  - [ ] Run `npm run test:extension` and `npm run typecheck:extension`.
+- **Dependencies:** Task 35.8
+- **Files likely touched:**
+  - `tests/extension/test_content_script.test.ts`
+  - `tests/extension/test_backend_gateway.test.ts`
+  - `tests/extension/test_popup.test.ts`
+- **Estimated scope:** Medium (3 files)
+
+---
+
+### Task 35.10: Run full test suite (`pytest`, `npm run test:extension`, `tsc --noEmit`) and update documentation
+- **Description:** Execute complete verification across entire project. Rebuild extension with `npm run build:extension`. Synchronize `docs/PROJECT_STATE.md` with Phase 35 status. Ensure zero suppressions and clean working tree.
+- **Acceptance criteria:**
+  - [ ] `pytest` passes 100% (all backend tests).
+  - [ ] `npm run test:extension` passes 100% (all extension tests).
+  - [ ] `npm run typecheck:extension` passes with 0 errors.
+  - [ ] `docs/PROJECT_STATE.md` updated to document Phase 35.
+- **Verification:**
+  - [ ] Run `pytest`, `npm run test:extension`, `npm run typecheck:extension`, and `git status`.
+- **Dependencies:** Task 35.9
+- **Files likely touched:**
   - `docs/PROJECT_STATE.md`
-- **Estimated scope:** Small (2 files)
+  - `dist/`
+- **Estimated scope:** Small (Verification & Documentation)
 
 ---
 
-## Checkpoint: Documentation & Spec Synchronized
-- [x] ADR-017 created and ADR-006 amended
-- [x] Spec updated to reflect single-engine DirectML reality
-- [x] Review before code modification
-
----
-
-## Phase 2: Backend Core Engine & Router Refactoring
-
-### Task 32.3: Refactor `OCRRouter` in `src/backend/engines/local/ocr/router.py`
-- **Description:** Refactor `OCRRouter` to eliminate dependency on `MangaOCRAdapter`. Map all manual overrides (`ja`, `japanese`, `manga-ocr`, `en`, `ko`, `zh`, `rapidocr`) and auto-probed Japanese text directly to `self._rapid_ocr`. Ensure both `recognize_routed()` and `recognize_routed_full_page()` handle Japanese speech bubbles cleanly without throwing exceptions.
-- **Acceptance criteria:**
-  - [x] Explicit selection of `source_lang="ja"` routes to RapidOCR instead of raising `RuntimeError`.
-  - [x] Router does not require or import `MangaOCRAdapter`.
-  - [x] Chapter language caching continues to operate smoothly for auto mode.
-- **Verification:**
-  - [x] Targeted tests for `router.py` with `target_mode="ja"`.
-- **Dependencies:** Task 32.2
-- **Files likely touched:**
-  - `src/backend/engines/local/ocr/router.py`
-- **Estimated scope:** Medium (1 file)
-
----
-
-### Task 32.4: Clean up dead code, configurations, and scratch test scripts
-- **Description:** Delete `src/backend/engines/local/ocr/manga_ocr.py`. Update `src/backend/engines/local/ocr/__init__.py` to remove `MangaOCRAdapter` export. Remove obsolete configuration `inkshift_local_manga_ocr_model_path` in `src/backend/config.py`. Clean up `.env.example` comments. Remove scratch worker scripts `scratch/run_manga_ocr_crops.py` and `scratch/test_japanese_ocr.py`.
-- **Acceptance criteria:**
-  - [x] `src/backend/engines/local/ocr/manga_ocr.py` deleted.
-  - [x] `src/backend/engines/local/ocr/__init__.py` cleanly exports only active OCR symbols.
-  - [x] `config.py` has no unused `inkshift_local_manga_ocr_model_path`.
-  - [x] Scratch directory cleaned of external-venv worker scripts.
-- **Verification:**
-  - [x] Verify clean imports with `python -c "import src.backend.engines.local.ocr as ocr; print(dir(ocr))"`.
-- **Dependencies:** Task 32.3
-- **Files likely touched:**
-  - `src/backend/engines/local/ocr/manga_ocr.py` (deleted)
-  - `src/backend/engines/local/ocr/__init__.py`
-  - `src/backend/config.py`
-  - `.env.example`
-  - `scratch/`
-- **Estimated scope:** Small (4 files)
-
----
-
-## Checkpoint: Backend Engine Refactored & Clean
-- [x] `manga_ocr.py` removed
-- [x] `router.py` natively routes `ja` to RapidOCR
-- [x] No dead config or orphan exports
-
----
-
-## Phase 3: Test Suite Modernization & Verification Gates
-
-### Task 32.5: Modernize unit tests in `tests/backend/engines/local/` & add Japanese regression test
-- **Description:** Update `tests/backend/engines/local/test_ocr_adapters.py`, `test_ocr_router.py`, `test_local_engine.py`, and `test_protocols.py`. Remove `MockMangaOCREngine` and `StubOCR("manga-ocr")` obsolete assertions. Add an explicit regression test asserting that when `POST /api/v1/translate` is called with `source_lang="ja"`, the local engine processes Japanese text via RapidOCR and returns HTTP 200 without `ENGINE_EXECUTION_FAILED`.
-- **Acceptance criteria:**
-  - [x] Obsolete mock tests removed or modernized for RapidOCR Japanese handling.
-  - [x] New test asserts `resolve_engine("ja")` returns `RapidOCRAdapter`.
-  - [x] Regression test verifies full end-to-end `source_lang="ja"` translation succeeds with HTTP 200.
-- **Verification:**
-  - [x] Run `pytest tests/backend/engines/local/ -v`.
-- **Dependencies:** Task 32.4
-- **Files likely touched:**
-  - `tests/backend/engines/local/test_ocr_adapters.py`
-  - `tests/backend/engines/local/test_ocr_router.py`
-  - `tests/backend/engines/local/test_local_engine.py`
-  - `tests/backend/engines/local/test_protocols.py`
-- **Estimated scope:** Medium (4 files)
-
----
-
-### Task 32.6: Run full verification suite (Pytest, Extension Vitest 250/250, Typecheck)
-- **Description:** Run full quality gates across both backend and frontend. Ensure 100% test pass rate with zero suppressions or regressions.
-- **Acceptance criteria:**
-  - [x] Backend pytest suite: 100% passing (301/301 tests).
-  - [x] Extension Vitest test suite: 100% passing (250/250 tests).
-  - [x] TypeScript check: `tsc --noEmit` 0 errors.
-  - [x] Working tree clean.
-- **Verification:**
-  - [x] Run `pytest`, `npm run test:extension`, `npm run typecheck:extension`.
-- **Dependencies:** Task 32.5
-- **Files likely touched:** None (Verification only)
-- **Estimated scope:** Small (Verification only)
-
----
-
-## Checkpoint: Phase 32 Completed & Verified
-- [x] ADR-017 active and Spec synchronized
-- [x] MangaOCR stub completely purged
-- [x] Extension `source_lang="ja"` translates reliably via RapidOCR DirectML
-- [x] All tests green (301 backend tests, 250 extension tests, 0 TS errors)
-
-
+## Checkpoint 4: Complete Verification & Quality Gate
+- [ ] 100% tests pass across backend and extension.
+- [ ] Zero TypeScript errors, zero suppressions.
+- [ ] Phase 35 verified and ready for human acceptance.

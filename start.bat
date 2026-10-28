@@ -199,7 +199,7 @@ echo   5. Select this folder:
 echo      %~dp0dist
 echo.
 echo   [HOTKEYS ON MANGA SITES]
-echo   - Alt + Z : Toggle Japanese-to-Vietnamese Translation Overlay
+echo   - Alt + Z : Toggle Translation Overlay
 echo   - Alt + M : Toggle Mascot HUD / Mode Switcher
 goto :CONTINUE_BANNER
 
