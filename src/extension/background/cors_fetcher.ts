@@ -69,6 +69,37 @@ export async function fetchAndProcessImage(
   imageUrl: string,
   options?: { timeoutMs?: number }
 ): Promise<ProcessedImageResult> {
+  // Direct fast path for inline Data URLs (e.g. Base64 canvas serializations)
+  if (imageUrl.startsWith('data:')) {
+    const commaIdx = imageUrl.indexOf(',');
+    if (commaIdx !== -1) {
+      const meta = imageUrl.substring(0, commaIdx);
+      const rawBase64 = imageUrl.substring(commaIdx + 1);
+      const mimeMatch = meta.match(/data:([^;]+)/);
+      const mimeType = mimeMatch ? mimeMatch[1] : 'image/jpeg';
+      const binary = atob(rawBase64);
+      const len = binary.length;
+      if (len > MAX_IMAGE_SIZE_BYTES) {
+        throw new Error(
+          `Image size exceeds maximum limit of 20MB: got ${(len / (1024 * 1024)).toFixed(2)}MB`
+        );
+      }
+      const bytes = new Uint8Array(len);
+      for (let i = 0; i < len; i++) {
+        bytes[i] = binary.charCodeAt(i);
+      }
+      const buffer = bytes.buffer;
+      const sha256Hex = await computeSha256Hex(buffer);
+      return {
+        buffer,
+        sha256Hex,
+        base64: rawBase64,
+        mimeType,
+        sizeBytes: len,
+      };
+    }
+  }
+
   const timeoutMs = options?.timeoutMs ?? DEFAULT_FETCH_TIMEOUT_MS;
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), timeoutMs);

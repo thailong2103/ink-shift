@@ -6,6 +6,7 @@ import {
   extractChapterIdFromUrl,
   extractPageNumberFromUrl,
   translateImageElement,
+  serializeImageElementToDataUrl,
   resolveImagePageNumber,
   detectCurrentReaderLayoutMode,
   handleGlobalKeyboardShortcuts,
@@ -660,4 +661,44 @@ describe('Content Script Orchestrator Pipeline', () => {
       );
     });
   });
+
+  describe('Blob URL Canvas Serialization & Rescan Synchronization', () => {
+    it('serializeImageElementToDataUrl returns null for zero dimensions', () => {
+      const img = document.createElement('img');
+      img.width = 0;
+      img.height = 0;
+      const res = serializeImageElementToDataUrl(img);
+      expect(res).toBeNull();
+    });
+
+    it('translateImageElement serializes blob: URL via canvas before dispatching IPC', async () => {
+      const img = document.createElement('img');
+      img.src = 'blob:https://mangadex.org/test-uuid-blob';
+      Object.defineProperty(img, 'clientWidth', { value: 800, configurable: true });
+      Object.defineProperty(img, 'clientHeight', { value: 1200, configurable: true });
+      Object.defineProperty(img, 'naturalWidth', { value: 800, configurable: true });
+      Object.defineProperty(img, 'naturalHeight', { value: 1200, configurable: true });
+      document.body.appendChild(img);
+
+      // Mock HTMLCanvasElement.prototype.toDataURL and getContext
+      const mockDataUrl = 'data:image/jpeg;base64,mockSerializedBlob';
+      vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({
+        drawImage: vi.fn(),
+      } as unknown as CanvasRenderingContext2D);
+      vi.spyOn(HTMLCanvasElement.prototype, 'toDataURL').mockReturnValue(mockDataUrl);
+
+      await translateImageElement(img, 0, true);
+
+      expect(mockSendMessage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: 'TRANSLATE_IMAGE',
+          payload: expect.objectContaining({
+            imageUrl: mockDataUrl,
+            forceRefresh: true,
+          }),
+        })
+      );
+    });
+  });
 });
+

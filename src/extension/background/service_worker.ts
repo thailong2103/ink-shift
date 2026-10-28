@@ -86,7 +86,7 @@ export async function handleIPCMessage(
         const translationTask = async (): Promise<IPCResponse<TranslationResponse>> => {
           // Step 3: Check SQLite translation cache on backend unless forceRefresh is true
           if (!forceRefresh) {
-            const cached = await gateway.checkCache(processed.sha256Hex, engine);
+            const cached = await gateway.checkCache(processed.sha256Hex, engine, translator);
             if (cached !== null) {
               logger.info(`[${traceId}] Cache HIT for hash ${processed.sha256Hex}`, { traceId, sha256Hex: processed.sha256Hex });
               return createSuccessResponse<TranslationResponse>(cached, traceId);
@@ -249,6 +249,25 @@ export async function handleIPCMessage(
           err instanceof BackendGatewayError
             ? err.toDetail()
             : { code: 'SETTINGS_SAVE_FAILED', message: err instanceof Error ? err.message : String(err) };
+        return createErrorResponse(detail);
+      }
+    }
+
+    case 'CLEAR_CACHE': {
+      try {
+        const payload = msg.payload;
+        const all = payload?.all ?? true;
+        const imageHash = payload?.imageHash;
+        const targetLang = payload?.targetLang;
+        const engine = payload?.engine;
+        const result = await gateway.clearCache(all, imageHash, targetLang, engine);
+        logger.info(`Cleared translation cache (${result.deleted} records removed, scope: ${result.scope})`);
+        return createSuccessResponse(result);
+      } catch (err: unknown) {
+        const detail: APIErrorDetail =
+          err instanceof BackendGatewayError
+            ? err.toDetail()
+            : { code: 'CACHE_CLEAR_FAILED', message: err instanceof Error ? err.message : String(err) };
         return createErrorResponse(detail);
       }
     }

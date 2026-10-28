@@ -99,7 +99,64 @@ describe('Backend Gateway & API Client', () => {
         expect.any(Object)
       );
     });
+
+    it('passes translator query parameter when specified', async () => {
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: vi.fn().mockResolvedValue({
+          success: true,
+          page_hash: 'hash-local',
+          engine_used: 'local',
+          execution_time_ms: 10,
+          from_cache: true,
+          blocks: [],
+        }),
+      } as unknown as Response);
+
+      await gateway.checkCache('hash-local', 'local', 'llm-custom');
+      expect(globalThis.fetch).toHaveBeenCalledWith(
+        expect.stringContaining('/api/v1/cache/hash-local?engine=local&translator=llm-custom'),
+        expect.any(Object)
+      );
+    });
   });
+
+  describe('clearCache', () => {
+    it('sends DELETE /api/v1/cache?all=true when wiping cache', async () => {
+      const mockResult = { success: true, deleted: 5, scope: 'all' };
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: vi.fn().mockResolvedValue(mockResult),
+      } as unknown as Response);
+
+      const result = await gateway.clearCache(true);
+      expect(result.success).toBe(true);
+      expect(result.deleted).toBe(5);
+      expect(globalThis.fetch).toHaveBeenCalledWith(
+        expect.stringContaining('/api/v1/cache?all=true'),
+        expect.objectContaining({ method: 'DELETE' })
+      );
+    });
+
+    it('sends DELETE /api/v1/cache?image_hash=... when deleting single entry', async () => {
+      const mockResult = { success: true, deleted: 1, scope: 'single' };
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: vi.fn().mockResolvedValue(mockResult),
+      } as unknown as Response);
+
+      const result = await gateway.clearCache(false, 'hash-to-delete');
+      expect(result.deleted).toBe(1);
+      expect(globalThis.fetch).toHaveBeenCalledWith(
+        expect.stringContaining('/api/v1/cache?image_hash=hash-to-delete'),
+        expect.objectContaining({ method: 'DELETE' })
+      );
+    });
+  });
+
 
   describe('requestTranslation', () => {
     it('returns TranslationResponse on HTTP 200', async () => {

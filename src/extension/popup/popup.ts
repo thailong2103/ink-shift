@@ -14,6 +14,7 @@ import type {
   ProviderSettingsData,
   SaveProviderSettingsData,
   IPCResponse,
+  ClearCacheResponseData,
 } from '../shared/ipc_types';
 import {
   loadDomainFilterSettings,
@@ -1064,6 +1065,71 @@ export async function triggerRescan(): Promise<void> {
 }
 
 /**
+ * Dispatches CLEAR_CACHE message to Service Worker and provides user feedback.
+ */
+export async function triggerClearCache(): Promise<void> {
+  const clearBtn = document.getElementById('clear-cache-btn') as HTMLButtonElement | null;
+  const feedbackEl = document.getElementById('clear-cache-feedback');
+
+  if (typeof window !== 'undefined' && typeof window.confirm === 'function') {
+    const confirmed = window.confirm(
+      'Bạn có chắc chắn muốn xóa toàn bộ bộ nhớ đệm bản dịch không? Các trang truyện sẽ phải dịch lại từ đầu.'
+    );
+    if (!confirmed) {
+      return;
+    }
+  }
+
+  if (clearBtn) {
+    clearBtn.disabled = true;
+  }
+  if (feedbackEl) {
+    feedbackEl.style.display = 'block';
+    feedbackEl.textContent = 'Đang dọn dẹp bộ nhớ đệm...';
+    feedbackEl.className = 'status-help-text';
+  }
+
+  try {
+    const message: IPCMessage = {
+      type: 'CLEAR_CACHE',
+      payload: { all: true },
+    };
+    const response = (await chrome.runtime.sendMessage(message)) as IPCResponse<ClearCacheResponseData>;
+
+    if (response && response.success === true) {
+      const count = response.data.deleted;
+      if (feedbackEl) {
+        feedbackEl.textContent = `✅ Đã xóa ${count} bản ghi bộ nhớ đệm!`;
+        feedbackEl.className = 'status-help-text success';
+      }
+      logger.info(`Successfully cleared cache (${count} records) via popup.`);
+
+      // Proactively trigger rescan on active reader tab if available
+      try {
+        await triggerRescan();
+      } catch {
+        // Rescan is secondary
+      }
+    } else {
+      const err = response && !response.success ? response.error.message : 'Lỗi không xác định';
+      if (feedbackEl) {
+        feedbackEl.textContent = `❌ Xóa cache thất bại: ${err}`;
+        feedbackEl.className = 'status-help-text error';
+      }
+    }
+  } catch (err: unknown) {
+    if (feedbackEl) {
+      feedbackEl.textContent = `❌ Lỗi kết nối: ${err instanceof Error ? err.message : String(err)}`;
+      feedbackEl.className = 'status-help-text error';
+    }
+  } finally {
+    if (clearBtn) {
+      clearBtn.disabled = false;
+    }
+  }
+}
+
+/**
  * Initializes popup UI controls, attaches event listeners, and runs initial health check.
  */
 export async function initPopup(): Promise<void> {
@@ -1483,6 +1549,14 @@ export async function initPopup(): Promise<void> {
   if (rescanBtn) {
     rescanBtn.addEventListener('click', () => {
       triggerRescan().catch(() => {});
+    });
+  }
+
+  // Bind clear-cache button
+  const clearCacheBtn = document.getElementById('clear-cache-btn');
+  if (clearCacheBtn) {
+    clearCacheBtn.addEventListener('click', () => {
+      triggerClearCache().catch(() => {});
     });
   }
 }

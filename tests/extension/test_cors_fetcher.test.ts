@@ -132,5 +132,22 @@ describe('CORS Fetcher & Binary Processing', () => {
       );
       expect(result.mimeType).toBe('image/jpeg');
     });
+
+    it('decodes inline Data URLs directly without invoking fetch', async () => {
+      const fetchSpy = vi.fn();
+      globalThis.fetch = fetchSpy;
+
+      const base64Data = btoa('test-image');
+      const dataUrl = `data:image/jpeg;base64,${base64Data}`;
+
+      const result = await fetchAndProcessImage(dataUrl);
+
+      expect(fetchSpy).not.toHaveBeenCalled();
+      expect(result.mimeType).toBe('image/jpeg');
+      expect(result.base64).toBe(base64Data);
+      expect(result.sizeBytes).toBe('test-image'.length);
+      expect(result.sha256Hex).toBeTruthy();
+    });
   });
 });
+

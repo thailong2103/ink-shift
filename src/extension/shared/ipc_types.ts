@@ -132,7 +132,29 @@ export type IPCMessage =
         apiKey?: string;
         baseUrl?: string;
       };
+    }
+  | {
+      type: 'CLEAR_CACHE';
+      payload?: {
+        all?: boolean;
+        imageHash?: string;
+        targetLang?: string;
+        engine?: string;
+      };
     };
+
+export interface ClearCachePayload {
+  all?: boolean;
+  imageHash?: string;
+  targetLang?: string;
+  engine?: string;
+}
+
+export interface ClearCacheResponseData {
+  success: true;
+  deleted: number;
+  scope: string;
+}
 
 
 export interface PageReaderStatusData {
@@ -272,6 +294,11 @@ export function isIPCMessage(value: unknown): value is IPCMessage {
     case 'SAVE_PROVIDER_SETTINGS': {
       const p = msg.payload as Record<string, unknown> | undefined;
       return typeof p === 'object' && p !== null && typeof p.provider === 'string';
+    }
+
+    case 'CLEAR_CACHE': {
+      const p = msg.payload as Record<string, unknown> | undefined;
+      return p === undefined || (typeof p === 'object' && p !== null);
     }
 
     default:

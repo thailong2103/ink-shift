@@ -21,6 +21,7 @@ export interface PrefetchTask {
   imageUrl: string;
   priority: TaskPriority;
   abortController: AbortController;
+  forceRefresh?: boolean;
 }
 
 export interface PrefetchSchedulerOptions {
@@ -173,9 +174,24 @@ export class PrefetchScheduler {
   }
 
   /**
+   * Resets pending and completed tasks for forced re-scan, re-evaluating the current window with forceRefresh=true on the active page.
+   */
+  resetForRescan(pageNumber?: number): void {
+    this.cancelPendingPrefetch();
+    this.completedPages.clear();
+    if (pageNumber !== undefined && pageNumber > 0) {
+      this.currentPage = pageNumber;
+    }
+    logger.info(
+      `Resetting prefetch queue for RESCAN (chapter: ${this.manifest?.chapter_id || 'unknown'}, page: #${this.currentPage})...`
+    );
+    this.recalculateWindow(true);
+  }
+
+  /**
    * Recalculates sliding window bounds and updates priority queue.
    */
-  private recalculateWindow(): void {
+  private recalculateWindow(forceRefreshCurrentPage: boolean = false): void {
     if (!this.manifest || !this.enabled) {
       return;
     }
@@ -202,9 +218,14 @@ export class PrefetchScheduler {
 
       const existingIndex = this.queue.findIndex((t) => t.pageNumber === p);
       const priority: TaskPriority = p === this.currentPage ? 'P0' : p === this.currentPage + 1 ? 'P1' : 'P2';
+      const isCurrentPage = p === this.currentPage;
+      const taskForceRefresh = isCurrentPage && forceRefreshCurrentPage;
 
       if (existingIndex >= 0) {
         this.queue[existingIndex].priority = priority;
+        if (taskForceRefresh) {
+          this.queue[existingIndex].forceRefresh = true;
+        }
       } else {
         const pageItem = this.manifest.pages.find((item) => item.page_number === p);
         if (pageItem && pageItem.image_url) {
@@ -213,6 +234,7 @@ export class PrefetchScheduler {
             imageUrl: pageItem.image_url,
             priority,
             abortController: new AbortController(),
+            forceRefresh: taskForceRefresh,
           });
         }
       }
@@ -307,7 +329,7 @@ export class PrefetchScheduler {
         model: this.model,
         sourceLang: this.sourceLang,
         chapterUrl: this.manifest?.chapter_url,
-        forceRefresh: false,
+        forceRefresh: Boolean(task.forceRefresh),
       },
     };
 

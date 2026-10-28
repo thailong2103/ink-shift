@@ -105,8 +105,8 @@ graph TD
 
 - **Capability Map:** [docs/specs/CAPABILITY_MAP.md](specs/CAPABILITY_MAP.md)
 - **Active / Completed Specs:** [docs/specs/SPEC-api-contract.md](specs/SPEC-api-contract.md), [docs/specs/SPEC-backend-engine.md](specs/SPEC-backend-engine.md), [docs/specs/SPEC-cloud-engine.md](specs/SPEC-cloud-engine.md), [docs/specs/SPEC-extension-core.md](specs/SPEC-extension-core.md), [docs/specs/SPEC-local-engine.md](specs/SPEC-local-engine.md), [docs/specs/SPEC-manga-context-graph.md](specs/SPEC-manga-context-graph.md), [docs/specs/SPEC-dynamic-llm-hub.md](specs/SPEC-dynamic-llm-hub.md), [docs/specs/SPEC-reader-layout-and-smooth-overlay.md](specs/SPEC-reader-layout-and-smooth-overlay.md), [docs/specs/SPEC-popup-and-mascot-hud.md](specs/SPEC-popup-and-mascot-hud.md)
-- **Active Task Checklist:** [tasks/todo.md](../tasks/todo.md) (Phase 32 Completed & Verified)
-- **Current Milestone:** Phase 32 Completed — OCR Pipeline Consolidation and DirectML RapidOCR Standardization
+- **Active Task Checklist:** [tasks/todo.md](../tasks/todo.md) (Phase 35 Completed: Cache Poisoning Elimination, MangaDex Blob-Bypass, & Purge Cache Controls)
+- **Current Milestone:** Phase 35 Completed — Cache Poisoning Elimination, MangaDex Blob-Bypass, and Purge Cache Controls
 
 ---
 

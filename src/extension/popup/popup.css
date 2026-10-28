@@ -831,3 +831,9 @@ body {
 .domain-tag-remove:hover {
   color: var(--inkshift-danger, #E11D48);
 }
+
+.danger-btn-hover:hover {
+  border-color: var(--inkshift-danger, #E11D48) !important;
+  color: var(--inkshift-danger, #E11D48) !important;
+}
+

@@ -6,6 +6,7 @@ import {
   loadSettings,
   saveSetting,
   triggerRescan,
+  triggerClearCache,
   updateConditionalVisibility,
   loadDomainSettings,
   renderDomainTags,
@@ -230,6 +231,8 @@ describe('Popup Settings Controller', () => {
           <div class="action-item">
             <button id="rescan-btn" class="primary-btn">Re-scan Page</button>
             <div id="rescan-status" class="status-help-text"></div>
+            <button id="clear-cache-btn" class="secondary-btn">Clear Cache</button>
+            <div id="clear-cache-feedback" class="status-help-text"></div>
           </div>
         </main>
       </div>
@@ -1017,6 +1020,52 @@ describe('Popup Settings Controller', () => {
       expect(mockStorageSet).toHaveBeenCalledWith({ mascotEnabled: true });
     });
   });
+
+  describe('Clear Cache Action', () => {
+    it('sends CLEAR_CACHE message when user confirms dialog', async () => {
+      vi.spyOn(window, 'confirm').mockReturnValue(true);
+      mockSendMessage.mockResolvedValueOnce({
+        success: true,
+        data: { success: true, deleted: 12, scope: 'all' },
+      });
+
+      await triggerClearCache();
+
+      expect(window.confirm).toHaveBeenCalled();
+      expect(mockSendMessage).toHaveBeenCalledWith({
+        type: 'CLEAR_CACHE',
+        payload: { all: true },
+      });
+
+      const feedback = document.getElementById('clear-cache-feedback')!;
+      expect(feedback.textContent).toContain('12');
+      expect(feedback.className).toContain('success');
+    });
+
+    it('does not send CLEAR_CACHE when user cancels confirm dialog', async () => {
+      vi.spyOn(window, 'confirm').mockReturnValue(false);
+
+      await triggerClearCache();
+
+      expect(window.confirm).toHaveBeenCalled();
+      expect(mockSendMessage).not.toHaveBeenCalled();
+    });
+
+    it('displays error feedback when CLEAR_CACHE returns failure', async () => {
+      vi.spyOn(window, 'confirm').mockReturnValue(true);
+      mockSendMessage.mockResolvedValueOnce({
+        success: false,
+        error: { code: 'CACHE_CLEAR_FAILED', message: 'SQLite locked' },
+      });
+
+      await triggerClearCache();
+
+      const feedback = document.getElementById('clear-cache-feedback')!;
+      expect(feedback.textContent).toContain('SQLite locked');
+      expect(feedback.className).toContain('error');
+    });
+  });
 });
+
 
 

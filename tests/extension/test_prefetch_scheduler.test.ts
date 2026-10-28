@@ -185,4 +185,35 @@ describe('PrefetchScheduler', () => {
 
     scheduler.cancelAllTasks();
   });
+
+  it('resets queue and dispatches active page with forceRefresh: true on resetForRescan', async () => {
+    const scheduler = new PrefetchScheduler({
+      enabled: true,
+      depth: 3,
+    });
+
+    scheduler.setChapterManifest(mockManifest, 1);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    expect(scheduler.isPageCompleted(1)).toBe(true);
+
+    vi.mocked(chrome.runtime.sendMessage).mockClear();
+
+    // Trigger resetForRescan on page 1
+    scheduler.resetForRescan(1);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    expect(chrome.runtime.sendMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: 'TRANSLATE_IMAGE',
+        payload: expect.objectContaining({
+          imageIndex: 0,
+          forceRefresh: true,
+        }),
+      })
+    );
+
+    scheduler.cancelAllTasks();
+  });
 });
+

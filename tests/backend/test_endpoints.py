@@ -709,3 +709,86 @@ class TestTranslateEndpoint:
             mock_provider_hit.assert_not_called()
             assert elapsed_ms < 100.0
 
+    async def test_translate_does_not_cache_when_is_fallback_is_true(
+        self,
+        async_client: httpx.AsyncClient,
+        client_headers: dict[str, str],
+        sample_translation_payload: dict[str, Any],
+    ) -> None:
+        """Translations with is_fallback=True must NEVER be persisted to SQLite cache."""
+        payload = dict(sample_translation_payload)
+        payload["image_hash"] = "f" * 64
+        payload["engine"] = "mock"
+
+        from src.backend.schemas.contract import TranslationResponse
+
+        fallback_response = TranslationResponse(
+            page_hash=payload["image_hash"],
+            engine_used="mock",
+            execution_time_ms=50,
+            from_cache=False,
+            is_fallback=True,
+            blocks=[],
+        )
+
+        with patch("src.backend.engines.mock.MockTranslationEngine.translate", new_callable=AsyncMock) as mock_translate:
+            mock_translate.return_value = fallback_response
+
+            resp = await async_client.post(
+                "/api/v1/translate",
+                json=payload,
+                headers=client_headers,
+            )
+            assert resp.status_code == 200
+            data = resp.json()
+            assert data["is_fallback"] is True
+
+        # Assert direct cache query is a 404 CACHE_MISS (not stored!)
+        cache_resp = await async_client.get(
+            f"/api/v1/cache/{payload['image_hash']}?target_lang=vi",
+            headers=client_headers,
+        )
+        assert cache_resp.status_code == 404
+
+    async def test_delete_cache_endpoints(
+        self,
+        async_client: httpx.AsyncClient,
+        client_headers: dict[str, str],
+        sample_translation_payload: dict[str, Any],
+    ) -> None:
+        """DELETE /api/v1/cache supports deleting single hash and wiping entire cache."""
+        payload = dict(sample_translation_payload)
+        payload["image_hash"] = "d" * 64
+        payload["engine"] = "mock"
+
+        # 1. Translate to populate cache
+        resp = await async_client.post("/api/v1/translate", json=payload, headers=client_headers)
+        assert resp.status_code == 200
+
+        # Verify entry in cache
+        cache_resp = await async_client.get(f"/api/v1/cache/{payload['image_hash']}?target_lang=vi", headers=client_headers)
+        assert cache_resp.status_code == 200
+
+        # 2. Delete specific entry
+        del_single = await async_client.delete(
+            f"/api/v1/cache?image_hash={payload['image_hash']}",
+            headers=client_headers,
+        )
+        assert del_single.status_code == 200
+        del_data = del_single.json()
+        assert del_data["success"] is True
+        assert del_data["deleted"] >= 1
+        assert del_data["scope"] == "single"
+
+        # Verify entry is gone
+        cache_resp2 = await async_client.get(f"/api/v1/cache/{payload['image_hash']}?target_lang=vi", headers=client_headers)
+        assert cache_resp2.status_code == 404
+
+        # 3. Wipe all cache
+        del_all = await async_client.delete("/api/v1/cache?all=true", headers=client_headers)
+        assert del_all.status_code == 200
+        del_all_data = del_all.json()
+        assert del_all_data["success"] is True
+        assert del_all_data["scope"] == "all"
+
+

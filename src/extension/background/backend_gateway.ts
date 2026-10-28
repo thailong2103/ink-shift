@@ -168,7 +168,7 @@ export class BackendGateway {
    * Checks if an image hash is already translated and cached in backend SQLite.
    * Returns TranslationResponse on hit (200), or null on miss (404).
    */
-  async checkCache(imageHash: string, engine?: string): Promise<TranslationResponse | null> {
+  async checkCache(imageHash: string, engine?: string, translator?: string): Promise<TranslationResponse | null> {
     return this.executeWithRetry(async () => {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), this.timeoutMs);
@@ -177,6 +177,9 @@ export class BackendGateway {
         const queryParams = new URLSearchParams();
         if (engine && engine !== 'auto') {
           queryParams.set('engine', engine);
+        }
+        if (translator) {
+          queryParams.set('translator', translator);
         }
         const qs = queryParams.toString() ? `?${queryParams.toString()}` : '';
         const response = await fetch(`${this.baseUrl}/api/v1/cache/${encodeURIComponent(imageHash)}${qs}`, {
@@ -205,6 +208,64 @@ export class BackendGateway {
         }
 
         return (await response.json()) as TranslationResponse;
+      } finally {
+        clearTimeout(timeoutId);
+      }
+    });
+  }
+
+  /**
+   * Deletes cached translations from backend SQLite.
+   * Can wipe all entries (all=true) or purge specific imageHash.
+   */
+  async clearCache(
+    all: boolean = true,
+    imageHash?: string,
+    targetLang?: string,
+    engine?: string
+  ): Promise<{ success: boolean; deleted: number; scope: string }> {
+    return this.executeWithRetry(async () => {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), this.timeoutMs);
+
+      try {
+        const queryParams = new URLSearchParams();
+        if (all) {
+          queryParams.set('all', 'true');
+        }
+        if (imageHash) {
+          queryParams.set('image_hash', imageHash);
+        }
+        if (targetLang) {
+          queryParams.set('target_lang', targetLang);
+        }
+        if (engine && engine !== 'auto') {
+          queryParams.set('engine', engine);
+        }
+
+        const qs = queryParams.toString() ? `?${queryParams.toString()}` : '';
+        const response = await fetch(`${this.baseUrl}/api/v1/cache${qs}`, {
+          method: 'DELETE',
+          headers: {
+            'X-InkShift-Client': 'extension',
+          },
+          signal: controller.signal,
+        });
+
+        if (!response.ok) {
+          let errorDetail: APIErrorDetail = { code: 'CACHE_CLEAR_FAILED', message: response.statusText };
+          try {
+            const body = (await response.json()) as { error?: APIErrorDetail };
+            if (body.error) {
+              errorDetail = body.error;
+            }
+          } catch {
+            // Ignore parse errors
+          }
+          throw new BackendGatewayError(errorDetail.code, errorDetail.message, response.status);
+        }
+
+        return (await response.json()) as { success: boolean; deleted: number; scope: string };
       } finally {
         clearTimeout(timeoutId);
       }

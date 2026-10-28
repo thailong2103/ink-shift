@@ -504,6 +504,28 @@ export async function loadConfigFromStorage(): Promise<ContentScriptConfig> {
   return activeConfig;
 }
 
+export function serializeImageElementToDataUrl(img: HTMLImageElement): string | null {
+  try {
+    const canvas = document.createElement('canvas');
+    const width = img.naturalWidth || (img as unknown as { videoWidth?: number }).videoWidth || img.width || img.clientWidth;
+    const height = img.naturalHeight || (img as unknown as { videoHeight?: number }).videoHeight || img.height || img.clientHeight;
+    if (width <= 0 || height <= 0) {
+      return null;
+    }
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) {
+      return null;
+    }
+    ctx.drawImage(img, 0, 0, width, height);
+    return canvas.toDataURL('image/jpeg', 0.92);
+  } catch (err) {
+    logger.warn('Failed to serialize image element to DataURL via canvas:', err);
+    return null;
+  }
+}
+
 export async function translateImageElement(
   img: HTMLImageElement,
   index: number,
@@ -621,12 +643,35 @@ export async function translateImageElement(
     );
   }
 
+  // Resolve blob: URLs to canonical manifest CDN URLs or serialize to canvas Base64 data URL
+  let effectiveImageUrl = rawUrl;
+  if (rawUrl.startsWith('blob:')) {
+    const manifestPage = activeManifest?.pages?.find((p) => p.page_number === currentPageNumber);
+    if (manifestPage?.image_url && !manifestPage.image_url.startsWith('blob:')) {
+      effectiveImageUrl = manifestPage.image_url;
+      logger.info(
+        `Resolved blob: URL to canonical manifest CDN URL for page #${currentPageNumber}: ${effectiveImageUrl}`,
+        { page: currentPageNumber, rawUrl, canonicalUrl: effectiveImageUrl }
+      );
+    } else {
+      const canvasDataUrl = serializeImageElementToDataUrl(img);
+      if (canvasDataUrl) {
+        effectiveImageUrl = canvasDataUrl;
+        logger.info(
+          `Serialized blob: image #${index} (page #${currentPageNumber}) to canvas Base64 data URL (${Math.round(canvasDataUrl.length / 1024)} KB)`
+        );
+      } else {
+        logger.warn(`Could not serialize blob: image #${index} to canvas. Falling back to raw blob URL.`);
+      }
+    }
+  }
+
   const message: IPCMessage = {
     type: 'TRANSLATE_IMAGE',
     payload: {
       traceId,
       imageIndex: index,
-      imageUrl: rawUrl,
+      imageUrl: effectiveImageUrl,
       clientWidth,
       clientHeight,
       engine: activeConfig.engine,
@@ -1168,6 +1213,11 @@ export async function initContentScript(): Promise<void> {
             translationCacheByUrl.clear();
             translationCacheByPage.clear();
             activeChapterId = null;
+            if (activeScheduler) {
+              const currentUrl = typeof window !== 'undefined' ? new URL(window.location.href) : null;
+              const currentPage = currentUrl ? extractPageNumberFromUrl(currentUrl) : 1;
+              activeScheduler.resetForRescan(currentPage);
+            }
             loadConfigFromStorage()
               .then(() => runReaderOrchestration(true))
               .then((count) => {

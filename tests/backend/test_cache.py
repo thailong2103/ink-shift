@@ -309,6 +309,113 @@ class TestTranslationCache(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(cached_legacy.engine_used, "mock-engine")
         self.assertEqual(cached_cloud.engine_used, "cloud")
 
+    async def test_multi_translator_isolation(self) -> None:
+        """Cache must isolate entries with same image_hash and target_lang but different translators."""
+        await self.cache.initialize()
+
+        res_google = self.sample_response.model_copy(
+            update={
+                "blocks": [
+                    TranslatedBlock(
+                        id="b1",
+                        box=(10, 10, 100, 100),
+                        source_text="Hello",
+                        translated_text="Xin chào (Google)",
+                        direction="horizontal",
+                        confidence=0.9,
+                    )
+                ]
+            }
+        )
+        res_llm = self.sample_response.model_copy(
+            update={
+                "blocks": [
+                    TranslatedBlock(
+                        id="b1",
+                        box=(10, 10, 100, 100),
+                        source_text="Hello",
+                        translated_text="Xin chào (LLM)",
+                        direction="horizontal",
+                        confidence=0.95,
+                    )
+                ]
+            }
+        )
+
+        await self.cache.set(
+            image_hash=self.sample_hash,
+            target_lang="vi",
+            response=res_google,
+            engine_used="local",
+            translator_used="google-free",
+        )
+        await self.cache.set(
+            image_hash=self.sample_hash,
+            target_lang="vi",
+            response=res_llm,
+            engine_used="local",
+            translator_used="llm-custom",
+        )
+
+        cached_google = await self.cache.get(
+            image_hash=self.sample_hash,
+            target_lang="vi",
+            engine_used="local",
+            translator_used="google-free",
+        )
+        cached_llm = await self.cache.get(
+            image_hash=self.sample_hash,
+            target_lang="vi",
+            engine_used="local",
+            translator_used="llm-custom",
+        )
+
+        self.assertIsNotNone(cached_google)
+        self.assertIsNotNone(cached_llm)
+        assert cached_google is not None
+        assert cached_llm is not None
+        self.assertEqual(cached_google.blocks[0].translated_text, "Xin chào (Google)")
+        self.assertEqual(cached_llm.blocks[0].translated_text, "Xin chào (LLM)")
+
+    async def test_cache_delete_and_clear(self) -> None:
+        """Cache delete() and clear() must correctly remove entries and return counts."""
+        await self.cache.initialize()
+
+        hash_1 = "1" * 64
+        hash_2 = "2" * 64
+
+        await self.cache.set(
+            image_hash=hash_1,
+            target_lang="vi",
+            response=self.sample_response,
+            engine_used="local",
+            translator_used="google-free",
+        )
+        await self.cache.set(
+            image_hash=hash_2,
+            target_lang="vi",
+            response=self.sample_response,
+            engine_used="local",
+            translator_used="google-free",
+        )
+
+        deleted = await self.cache.delete(image_hash=hash_1)
+        self.assertEqual(deleted, 1)
+
+        self.assertIsNone(
+            await self.cache.get(image_hash=hash_1, target_lang="vi", engine_used="local", translator_used="google-free")
+        )
+        self.assertIsNotNone(
+            await self.cache.get(image_hash=hash_2, target_lang="vi", engine_used="local", translator_used="google-free")
+        )
+
+        cleared = await self.cache.clear()
+        self.assertEqual(cleared, 1)
+        self.assertIsNone(
+            await self.cache.get(image_hash=hash_2, target_lang="vi", engine_used="local", translator_used="google-free")
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
+
