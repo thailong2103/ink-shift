@@ -1065,15 +1065,113 @@ export async function triggerRescan(): Promise<void> {
 }
 
 /**
- * Dispatches CLEAR_CACHE message to Service Worker and provides user feedback.
+ * Clears in-memory RAM caches and tears down DOM overlays on the active browser tab without affecting SQLite.
  */
-export async function triggerClearCache(): Promise<void> {
-  const clearBtn = document.getElementById('clear-cache-btn') as HTMLButtonElement | null;
-  const feedbackEl = document.getElementById('clear-cache-feedback');
+export async function triggerClearBrowserCache(): Promise<void> {
+  const btn = document.getElementById('clear-browser-cache-btn') as HTMLButtonElement | null;
+  const feedbackEl = document.getElementById('clear-browser-cache-feedback');
+
+  if (typeof chrome === 'undefined' || !chrome.tabs?.query) {
+    if (feedbackEl) {
+      feedbackEl.style.display = 'block';
+      feedbackEl.textContent = 'Chrome tabs API không khả dụng';
+      feedbackEl.className = 'status-help-text error';
+    }
+    return;
+  }
+
+  if (btn) {
+    btn.disabled = true;
+  }
+  if (feedbackEl) {
+    feedbackEl.style.display = 'block';
+    feedbackEl.textContent = 'Đang làm mới bộ nhớ tạm trình duyệt...';
+    feedbackEl.className = 'status-help-text';
+  }
+
+  try {
+    const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (!tabs.length || tabs[0].id === undefined) {
+      if (feedbackEl) {
+        feedbackEl.textContent = 'Không tìm thấy tab hoạt động';
+        feedbackEl.className = 'status-help-text error';
+      }
+      return;
+    }
+
+    const activeTab = tabs[0];
+    const tabId = activeTab.id;
+    if (tabId === undefined) {
+      return;
+    }
+    const url = activeTab.url || '';
+
+    if (
+      url.startsWith('chrome://') ||
+      url.startsWith('chrome-extension://') ||
+      url.startsWith('edge://') ||
+      url.startsWith('about:')
+    ) {
+      if (feedbackEl) {
+        feedbackEl.textContent = '⚠️ Tab hiện tại không phải trang đọc truyện manga.';
+        feedbackEl.className = 'status-help-text warning';
+      }
+      return;
+    }
+
+    const message: IPCMessage = { type: 'RESCAN_PAGE' };
+    const response = (await chrome.tabs.sendMessage(tabId, message, { frameId: 0 })) as {
+      success?: boolean;
+      count?: number;
+    } | undefined;
+
+    const count = response && typeof response.count === 'number' ? response.count : 0;
+    if (feedbackEl) {
+      if (count > 0) {
+        feedbackEl.textContent = `✅ Đã xóa bộ nhớ tạm RAM & làm mới ${count} ảnh trên trang!`;
+        feedbackEl.className = 'status-help-text success';
+      } else {
+        feedbackEl.textContent = '✅ Đã xóa bộ nhớ tạm RAM và gỡ bỏ overlay trên tab.';
+        feedbackEl.className = 'status-help-text success';
+      }
+    }
+    logger.info(`Successfully cleared in-memory browser cache on tab ${tabId}`);
+  } catch (err: unknown) {
+    const errMsg = err instanceof Error ? err.message : String(err);
+    logger.warn(`Could not clear browser cache on active tab: ${errMsg}`);
+    if (feedbackEl) {
+      if (
+        errMsg.includes('Could not establish connection') ||
+        errMsg.includes('Receiving end does not exist')
+      ) {
+        feedbackEl.textContent = '⚠️ Hãy F5 trang truyện để nạp lại script content trước khi xóa bộ nhớ tạm.';
+        feedbackEl.className = 'status-help-text warning';
+      } else {
+        feedbackEl.textContent = `❌ Lỗi xóa bộ nhớ tạm: ${errMsg}`;
+        feedbackEl.className = 'status-help-text error';
+      }
+    }
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+    }
+  }
+}
+
+/**
+ * Dispatches CLEAR_CACHE message to Service Worker to wipe SQLite database cache and provides user feedback.
+ */
+export async function triggerClearDatabaseCache(): Promise<void> {
+  const clearBtn =
+    (document.getElementById('clear-db-cache-btn') as HTMLButtonElement | null) ||
+    (document.getElementById('clear-cache-btn') as HTMLButtonElement | null);
+  const feedbackEl =
+    document.getElementById('clear-db-cache-feedback') ||
+    document.getElementById('clear-cache-feedback');
 
   if (typeof window !== 'undefined' && typeof window.confirm === 'function') {
     const confirmed = window.confirm(
-      'Bạn có chắc chắn muốn xóa toàn bộ bộ nhớ đệm bản dịch không? Các trang truyện sẽ phải dịch lại từ đầu.'
+      'Bạn có chắc chắn muốn xóa TOÀN BỘ bản dịch trong CSDL SQLite không? Mọi trang truyện trên tất cả website sẽ phải dịch lại từ đầu.'
     );
     if (!confirmed) {
       return;
@@ -1085,7 +1183,7 @@ export async function triggerClearCache(): Promise<void> {
   }
   if (feedbackEl) {
     feedbackEl.style.display = 'block';
-    feedbackEl.textContent = 'Đang dọn dẹp bộ nhớ đệm...';
+    feedbackEl.textContent = 'Đang dọn dẹp bộ nhớ đệm SQLite...';
     feedbackEl.className = 'status-help-text';
   }
 
@@ -1102,7 +1200,7 @@ export async function triggerClearCache(): Promise<void> {
         feedbackEl.textContent = `✅ Đã xóa ${count} bản ghi bộ nhớ đệm!`;
         feedbackEl.className = 'status-help-text success';
       }
-      logger.info(`Successfully cleared cache (${count} records) via popup.`);
+      logger.info(`Successfully cleared SQLite cache (${count} records) via popup.`);
 
       // Proactively trigger rescan on active reader tab if available
       try {
@@ -1128,6 +1226,11 @@ export async function triggerClearCache(): Promise<void> {
     }
   }
 }
+
+/**
+ * Backwards compatibility alias for triggerClearDatabaseCache.
+ */
+export const triggerClearCache = triggerClearDatabaseCache;
 
 /**
  * Initializes popup UI controls, attaches event listeners, and runs initial health check.
@@ -1552,11 +1655,20 @@ export async function initPopup(): Promise<void> {
     });
   }
 
-  // Bind clear-cache button
-  const clearCacheBtn = document.getElementById('clear-cache-btn');
-  if (clearCacheBtn) {
-    clearCacheBtn.addEventListener('click', () => {
-      triggerClearCache().catch(() => {});
+  // Bind clear-browser-cache button
+  const clearBrowserCacheBtn = document.getElementById('clear-browser-cache-btn');
+  if (clearBrowserCacheBtn) {
+    clearBrowserCacheBtn.addEventListener('click', () => {
+      triggerClearBrowserCache().catch(() => {});
+    });
+  }
+
+  // Bind clear-db-cache button (and legacy clear-cache-btn)
+  const clearDbCacheBtn =
+    document.getElementById('clear-db-cache-btn') || document.getElementById('clear-cache-btn');
+  if (clearDbCacheBtn) {
+    clearDbCacheBtn.addEventListener('click', () => {
+      triggerClearDatabaseCache().catch(() => {});
     });
   }
 }

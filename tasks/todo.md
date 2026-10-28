@@ -215,6 +215,28 @@
 
 ---
 
+### Task 35.11: Separate Browser In-Memory Cache and SQLite Database Cache Clear Controls
+- **Description:** Decouple cache management in extension popup into two distinct actions: (1) Browser In-Memory Cache (RAM & DOM) which clears extension memory caches, active lookahead queues, and tears down overlays on the active tab without touching SQLite, and (2) SQLite Database Cache which permanently wipes `translation_cache` in `data/cache.db` with user confirmation.
+- **Acceptance criteria:**
+  - [x] Popup settings drawer renders two distinct cache action buttons: `#clear-browser-cache-btn` and `#clear-db-cache-btn`.
+  - [x] `triggerClearBrowserCache()` dispatches `RESCAN_PAGE` message to active tab without modifying SQLite.
+  - [x] `triggerClearDatabaseCache()` prompts confirmation, dispatches `CLEAR_CACHE` message `{ all: true }`, and triggers rescan.
+  - [x] Backwards-compatible alias `triggerClearCache` maintained.
+  - [x] 100% unit test coverage in `tests/extension/test_popup.test.ts` for both actions.
+- **Verification:**
+  - [x] `npm run typecheck:extension` passes with 0 errors.
+  - [x] `npm run test:extension` passes 100% (265/265 tests).
+  - [x] `npm run build:extension` generates updated dist bundles.
+- **Dependencies:** Task 35.9
+- **Files touched:**
+  - `src/extension/popup/popup.html`
+  - `src/extension/popup/popup.ts`
+  - `tests/extension/test_popup.test.ts`
+  - `tasks/todo.md`
+- **Status:** **COMPLETED**
+
+---
+
 ## Checkpoint 4: Complete Verification & Quality Gate
 - [x] 100% tests pass across backend and extension.
 - [x] Zero TypeScript errors, zero suppressions.

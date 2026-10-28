@@ -6,6 +6,8 @@ import {
   loadSettings,
   saveSetting,
   triggerRescan,
+  triggerClearBrowserCache,
+  triggerClearDatabaseCache,
   triggerClearCache,
   updateConditionalVisibility,
   loadDomainSettings,
@@ -231,6 +233,10 @@ describe('Popup Settings Controller', () => {
           <div class="action-item">
             <button id="rescan-btn" class="primary-btn">Re-scan Page</button>
             <div id="rescan-status" class="status-help-text"></div>
+            <button id="clear-browser-cache-btn" class="secondary-btn">Clear Browser Cache</button>
+            <div id="clear-browser-cache-feedback" class="status-help-text"></div>
+            <button id="clear-db-cache-btn" class="secondary-btn">Clear DB Cache</button>
+            <div id="clear-db-cache-feedback" class="status-help-text"></div>
             <button id="clear-cache-btn" class="secondary-btn">Clear Cache</button>
             <div id="clear-cache-feedback" class="status-help-text"></div>
           </div>
@@ -1021,48 +1027,106 @@ describe('Popup Settings Controller', () => {
     });
   });
 
-  describe('Clear Cache Action', () => {
-    it('sends CLEAR_CACHE message when user confirms dialog', async () => {
-      vi.spyOn(window, 'confirm').mockReturnValue(true);
-      mockSendMessage.mockResolvedValueOnce({
-        success: true,
-        data: { success: true, deleted: 12, scope: 'all' },
+  describe('Clear Cache Actions (Browser & Database)', () => {
+    describe('triggerClearBrowserCache', () => {
+      it('dispatches RESCAN_PAGE to active tab and updates feedback with count', async () => {
+        mockTabsQuery.mockResolvedValueOnce([{ id: 202, url: 'https://mangadex.org/chapter/456' }]);
+        mockTabsSendMessage.mockResolvedValueOnce({ success: true, count: 8 });
+
+        await triggerClearBrowserCache();
+
+        expect(mockTabsQuery).toHaveBeenCalledWith({ active: true, currentWindow: true });
+        expect(mockTabsSendMessage).toHaveBeenCalledWith(202, { type: 'RESCAN_PAGE' }, { frameId: 0 });
+
+        const feedback = document.getElementById('clear-browser-cache-feedback')!;
+        expect(feedback.textContent).toContain('8');
+        expect(feedback.className).toContain('success');
       });
 
-      await triggerClearCache();
+      it('warns when active tab is a browser system page', async () => {
+        mockTabsQuery.mockResolvedValueOnce([{ id: 101, url: 'chrome://extensions' }]);
 
-      expect(window.confirm).toHaveBeenCalled();
-      expect(mockSendMessage).toHaveBeenCalledWith({
-        type: 'CLEAR_CACHE',
-        payload: { all: true },
+        await triggerClearBrowserCache();
+
+        expect(mockTabsSendMessage).not.toHaveBeenCalled();
+        const feedback = document.getElementById('clear-browser-cache-feedback')!;
+        expect(feedback.textContent).toContain('không phải trang đọc truyện manga');
+        expect(feedback.className).toContain('warning');
       });
 
-      const feedback = document.getElementById('clear-cache-feedback')!;
-      expect(feedback.textContent).toContain('12');
-      expect(feedback.className).toContain('success');
+      it('handles content script disconnection error gracefully', async () => {
+        mockTabsQuery.mockResolvedValueOnce([{ id: 303, url: 'https://mangadex.org/chapter/789' }]);
+        mockTabsSendMessage.mockRejectedValueOnce(new Error('Could not establish connection. Receiving end does not exist.'));
+
+        await triggerClearBrowserCache();
+
+        const feedback = document.getElementById('clear-browser-cache-feedback')!;
+        expect(feedback.textContent).toContain('Hãy F5 trang truyện');
+        expect(feedback.className).toContain('warning');
+      });
     });
 
-    it('does not send CLEAR_CACHE when user cancels confirm dialog', async () => {
-      vi.spyOn(window, 'confirm').mockReturnValue(false);
+    describe('triggerClearDatabaseCache', () => {
+      it('sends CLEAR_CACHE message when user confirms dialog', async () => {
+        vi.spyOn(window, 'confirm').mockReturnValue(true);
+        mockSendMessage.mockResolvedValueOnce({
+          success: true,
+          data: { success: true, deleted: 15, scope: 'all' },
+        });
 
-      await triggerClearCache();
+        await triggerClearDatabaseCache();
 
-      expect(window.confirm).toHaveBeenCalled();
-      expect(mockSendMessage).not.toHaveBeenCalled();
-    });
+        expect(window.confirm).toHaveBeenCalled();
+        expect(mockSendMessage).toHaveBeenCalledWith({
+          type: 'CLEAR_CACHE',
+          payload: { all: true },
+        });
 
-    it('displays error feedback when CLEAR_CACHE returns failure', async () => {
-      vi.spyOn(window, 'confirm').mockReturnValue(true);
-      mockSendMessage.mockResolvedValueOnce({
-        success: false,
-        error: { code: 'CACHE_CLEAR_FAILED', message: 'SQLite locked' },
+        const feedback = document.getElementById('clear-db-cache-feedback')!;
+        expect(feedback.textContent).toContain('15');
+        expect(feedback.className).toContain('success');
       });
 
-      await triggerClearCache();
+      it('does not send CLEAR_CACHE when user cancels dialog', async () => {
+        vi.spyOn(window, 'confirm').mockReturnValue(false);
 
-      const feedback = document.getElementById('clear-cache-feedback')!;
-      expect(feedback.textContent).toContain('SQLite locked');
-      expect(feedback.className).toContain('error');
+        await triggerClearDatabaseCache();
+
+        expect(window.confirm).toHaveBeenCalled();
+        expect(mockSendMessage).not.toHaveBeenCalled();
+      });
+
+      it('displays error feedback when database clear returns failure', async () => {
+        vi.spyOn(window, 'confirm').mockReturnValue(true);
+        mockSendMessage.mockResolvedValueOnce({
+          success: false,
+          error: { code: 'DATABASE_LOCKED', message: 'SQLite database is busy' },
+        });
+
+        await triggerClearDatabaseCache();
+
+        const feedback = document.getElementById('clear-db-cache-feedback')!;
+        expect(feedback.textContent).toContain('SQLite database is busy');
+        expect(feedback.className).toContain('error');
+      });
+    });
+
+    describe('triggerClearCache backwards compatibility alias', () => {
+      it('executes triggerClearDatabaseCache logic and updates fallback feedback', async () => {
+        vi.spyOn(window, 'confirm').mockReturnValue(true);
+        mockSendMessage.mockResolvedValueOnce({
+          success: true,
+          data: { success: true, deleted: 12, scope: 'all' },
+        });
+
+        await triggerClearCache();
+
+        expect(window.confirm).toHaveBeenCalled();
+        expect(mockSendMessage).toHaveBeenCalledWith({
+          type: 'CLEAR_CACHE',
+          payload: { all: true },
+        });
+      });
     });
   });
 });
