@@ -54,8 +54,13 @@ async def main() -> None:
     settings = Settings()
     image_path = REPO_ROOT / "docs" / "vi" / "reports" / "images" / "benchmark_page.png"
     if not image_path.exists():
-        print(f"[ERROR] Benchmark image not found: {image_path}")
-        sys.exit(1)
+        fallback_fixture = REPO_ROOT / "tests" / "fixtures" / "manga_sample_panel.png"
+        if fallback_fixture.exists():
+            image_path = fallback_fixture
+            print(f"[INFO] Using fallback test fixture: {image_path}")
+        else:
+            print(f"[ERROR] Benchmark image not found: {image_path}")
+            sys.exit(1)
 
     print("=" * 80)
     print("  INKSHIFT REAL-HARDWARE BENCHMARK: TRANSLATION VARIANTS")

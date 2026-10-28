@@ -948,7 +948,8 @@ element.style.fontSize = `${Math.round(bestFit * 10) / 10}px`;"""
     set_run_font(r_sl, "Times New Roman", 12.0, bold=True, italic=False, color_rgb=(15, 23, 42))
     
     # Save Document with Gotcha 7 (File-Lock Recovery)
-    target_path = os.path.abspath(r'docs\vi\reports\INKSHIFT_BAO_CAO_TONG_HOP.docx')
+    target_path = os.path.abspath(os.path.join("docs", "vi", "reports", "INKSHIFT_BAO_CAO_TONG_HOP.docx"))
+    os.makedirs(os.path.dirname(target_path), exist_ok=True)
     print(f"Attempting to save report to: {target_path}")
     try:
         doc.save(target_path)

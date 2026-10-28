@@ -11,6 +11,10 @@ OUT_DIR = REPO_ROOT / "docs" / "vi" / "reports" / "images"
 FONT_PATH = REPO_ROOT / "src" / "extension" / "assets" / "fonts" / "Itim-Regular.ttf"
 
 def render_detection_visualization():
+    if not REPORT_PATH.exists() or not IMAGE_PATH.exists():
+        print(f"[INFO] Skipping benchmark visual rendering: {REPORT_PATH} or {IMAGE_PATH} does not exist.")
+        return
+    OUT_DIR.mkdir(parents=True, exist_ok=True)
     with open(REPORT_PATH, "r", encoding="utf-8") as f:
         data = json.load(f)
 

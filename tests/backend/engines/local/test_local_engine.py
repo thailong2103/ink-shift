@@ -670,3 +670,35 @@ async def test_local_engine_japanese_routes_to_rapidocr_standalone() -> None:
 
 
 
+
+
+@pytest.mark.asyncio
+async def test_local_engine_fallback_detected_on_auto_source_lang() -> None:
+    """Verify fallback heuristic triggers even when source_lang is 'auto' if text is untranslated."""
+    rapid_ocr = StubFullPageOCR("rapidocr", ["Hello world from manga"])
+    router = OCRRouter(rapid_ocr=rapid_ocr, default_model="auto")
+
+    # Translator returns identical string without modifying it (simulating silent fallback)
+    translator = StubTranslator("mock-trans", prefix="")
+    reg = TranslatorRegistry(default_translator_name="mock-trans")
+    reg.register("mock-trans", translator)
+
+    engine = LocalTranslationEngine(
+        ocr_router=router,
+        translator_registry=reg,
+        name="local",
+        default_ocr="auto",
+    )
+
+    bubble = DetectedBubble(id="b_auto", box_2d=(50, 50, 250, 250))
+    req = TranslationRequest(
+        image=make_test_image_base64(),
+        source_lang="auto",
+        target_lang="vi",
+        engine="local",
+    )
+
+    resp = await engine.translate(req, bubbles=[bubble])
+
+    assert len(resp.blocks) == 1
+    assert resp.is_fallback is True

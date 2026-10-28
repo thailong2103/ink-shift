@@ -166,23 +166,26 @@ async def translate_page(
         )
     )
 
-    # In-flight task deduplication (Singleflight pattern)
+    # In-flight task deduplication (Singleflight pattern with composite key)
     in_flight_tasks: dict[str, asyncio.Future[TranslationResponse | JSONResponse]] = getattr(
         request.app.state, "in_flight_tasks", {}
     )
-    if page_hash in in_flight_tasks:
+    flight_key = f"{page_hash}:{payload.target_lang}:{target_engine_name}:{target_translator}"
+    if flight_key in in_flight_tasks:
         logger.info(
             format_logfmt(
                 "InFlightHit",
                 hash=page_hash[:16],
+                target_lang=payload.target_lang,
                 engine=target_engine_name,
+                translator=target_translator,
             )
         )
-        return await in_flight_tasks[page_hash]
+        return await in_flight_tasks[flight_key]
 
     loop = asyncio.get_running_loop()
     future: asyncio.Future[TranslationResponse | JSONResponse] = loop.create_future()
-    in_flight_tasks[page_hash] = future
+    in_flight_tasks[flight_key] = future
 
     try:
         try:
@@ -329,5 +332,5 @@ async def translate_page(
         raise
 
     finally:
-        in_flight_tasks.pop(page_hash, None)
+        in_flight_tasks.pop(flight_key, None)
 

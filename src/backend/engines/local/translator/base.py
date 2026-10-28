@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from typing import Protocol, runtime_checkable
 
 
 class TranslationBatch(list[str]):
     """List of translated strings with metadata indicating whether fallback was activated."""
 
-    def __init__(self, iterable=(), is_fallback: bool = False) -> None:
+    def __init__(self, iterable: Iterable[str] = (), is_fallback: bool = False) -> None:
         super().__init__(iterable)
         self.is_fallback = is_fallback
 

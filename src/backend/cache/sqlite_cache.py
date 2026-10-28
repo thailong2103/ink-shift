@@ -1,4 +1,5 @@
 import os
+import sqlite3
 import time
 
 import aiosqlite
@@ -220,7 +221,7 @@ class TranslationCache:
             await db.commit()
             try:
                 await db.execute("PRAGMA wal_checkpoint(TRUNCATE);")
-            except Exception as e:
+            except (aiosqlite.Error, sqlite3.Error) as e:
                 logger.warning("WAL checkpoint after cache clear skipped or failed: %s", e)
             logger.info("Cleared entire translation cache (%d records deleted)", count)
             return count
