@@ -7,29 +7,41 @@
   box-sizing: border-box;
 }
 
-body {
+html, body {
   margin: 0;
   padding: 0;
   width: 380px;
+  height: 590px;
+  max-height: 600px;
   background-color: var(--inkshift-bg, #12100E);
   color: var(--inkshift-text-primary, #FAF5F0);
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   font-size: 13px;
   line-height: 1.4;
-  overflow-x: hidden;
+  overflow: hidden;
   -webkit-font-smoothing: antialiased;
+}
+
+body.is-embedded,
+body.is-embedded .popup-container {
+  height: 100%;
+  max-height: 100%;
 }
 
 /* Container & Persistent Header */
 .popup-container {
   width: 380px;
+  height: 100%;
+  max-height: 600px;
+  display: flex;
+  flex-direction: column;
   overflow: hidden;
   position: relative;
   background: var(--inkshift-bg, #12100E);
-  max-height: 600px;
 }
 
 .popup-header {
+  flex-shrink: 0;
   display: flex;
   justify-content: space-between;
   align-items: center;
@@ -170,6 +182,8 @@ body {
 .view-slider {
   display: flex;
   width: 200%;
+  flex: 1;
+  min-height: 0;
   transition: transform 240ms cubic-bezier(0.16, 1, 0.3, 1);
 }
 
@@ -179,6 +193,8 @@ body {
 
 .popup-view {
   width: 380px;
+  height: 100%;
+  min-height: 0;
   flex-shrink: 0;
 }
 
@@ -187,7 +203,8 @@ body {
   display: flex;
   flex-direction: column;
   gap: 6px;
-  max-height: 580px;
+  height: 100%;
+  min-height: 0;
   overflow-y: auto;
   overflow-x: hidden;
   box-sizing: border-box;
@@ -217,12 +234,13 @@ body {
 #view-settings {
   display: flex;
   flex-direction: column;
-  height: 580px;
-  max-height: 580px;
+  height: 100%;
+  min-height: 0;
   background: var(--inkshift-bg, #12100E);
 }
 
 .view-header {
+  flex-shrink: 0;
   display: flex;
   align-items: center;
   gap: 10px;
@@ -258,8 +276,10 @@ body {
 
 .settings-scroll-content {
   flex: 1;
+  min-height: 0;
   overflow-y: auto;
-  padding: 12px 14px;
+  overflow-x: hidden;
+  padding: 12px 14px 40px 14px;
   display: flex;
   flex-direction: column;
   gap: 12px;

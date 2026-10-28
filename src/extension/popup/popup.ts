@@ -1267,6 +1267,9 @@ export async function initPopup(): Promise<void> {
   if (typeof window !== 'undefined' && window.location) {
     const urlParams = new URLSearchParams(window.location.search);
     const isEmbedded = urlParams.get('embedded') === '1';
+    if (isEmbedded && typeof document !== 'undefined' && document.body) {
+      document.body.classList.add('is-embedded');
+    }
     const closeBtn = document.getElementById('btn-close-popup');
     if (closeBtn && isEmbedded) {
       closeBtn.classList.remove('hidden');
