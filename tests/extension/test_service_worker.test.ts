@@ -74,7 +74,7 @@ describe('Service Worker Message Handling', () => {
 
     expect(response.success).toBe(true);
     expect(response.traceId).toBe('trace-img-1');
-    expect(mockGateway.checkCache).toHaveBeenCalledWith('hash-hit', undefined);
+    expect(mockGateway.checkCache).toHaveBeenCalledWith('hash-hit', undefined, undefined);
     expect(mockGateway.requestTranslation).not.toHaveBeenCalled();
   });
 
@@ -396,6 +396,27 @@ describe('Service Worker Message Handling', () => {
 
     expect(res.success).toBe(true);
     expect(mockBatcher.flush).toHaveBeenCalledTimes(1);
+  });
+
+  it('handles CLEAR_CACHE IPC message and calls gateway.clearCache', async () => {
+    mockGateway.clearCache = vi.fn().mockResolvedValue({
+      success: true,
+      deleted: 15,
+      scope: 'all',
+    });
+
+    const clearMsg: IPCMessage = {
+      type: 'CLEAR_CACHE',
+      payload: { all: true },
+    };
+
+    const res = await handleIPCMessage(clearMsg, undefined, mockGateway as BackendGateway);
+
+    expect(res.success).toBe(true);
+    expect(mockGateway.clearCache).toHaveBeenCalledWith(true, undefined, undefined, undefined);
+    if (res.success) {
+      expect((res.data as any).deleted).toBe(15);
+    }
   });
 });
 
