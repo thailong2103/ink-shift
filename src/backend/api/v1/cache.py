@@ -99,7 +99,7 @@ async def delete_cached_translation(
         logger.info(format_logfmt("CacheEntryDeleted", hash=image_hash[:16], count=deleted_count))
         return JSONResponse(
             status_code=200,
-            content={"success": True, "deleted": deleted_count, "scope": "hash"},
+            content={"success": True, "deleted": deleted_count, "scope": "single"},
         )
 
     return JSONResponse(

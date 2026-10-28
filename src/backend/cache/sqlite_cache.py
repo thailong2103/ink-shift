@@ -217,7 +217,10 @@ class TranslationCache:
                 count = row[0] if row else 0
 
             await db.execute("DELETE FROM translation_cache;")
-            await db.execute("PRAGMA wal_checkpoint(TRUNCATE);")
             await db.commit()
+            try:
+                await db.execute("PRAGMA wal_checkpoint(TRUNCATE);")
+            except Exception as e:
+                logger.warning("WAL checkpoint after cache clear skipped or failed: %s", e)
             logger.info("Cleared entire translation cache (%d records deleted)", count)
             return count
