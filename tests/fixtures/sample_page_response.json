@@ -1,0 +1,25 @@
+{
+  "success": true,
+  "page_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "engine_used": "gemini-2.0-flash",
+  "execution_time_ms": 1420,
+  "from_cache": false,
+  "blocks": [
+    {
+      "id": "blk_01j9a8b7c6d5e4f3a2b1",
+      "box": [120, 450, 280, 720],
+      "source_text": "何をしているんだ？",
+      "translated_text": "Cậu đang làm cái gì thế?",
+      "direction": "vertical",
+      "confidence": 0.98
+    },
+    {
+      "id": "blk_01j9a8b7c6d5e4f3a2b2",
+      "box": [350, 100, 420, 300],
+      "source_text": "早く逃げろ！",
+      "translated_text": "Chạy mau đi!",
+      "direction": "horizontal",
+      "confidence": 0.95
+    }
+  ]
+}

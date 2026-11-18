@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>InkShift Offline Manga Test Reader</title>
+  <style>
+    :root {
+      --bg-color: #0f1115;
+      --card-bg: #1a1d24;
+      --accent: #6366f1;
+      --text: #f3f4f6;
+      --text-muted: #9ca3af;
+    }
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+    body {
+      background-color: var(--bg-color);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 2rem 1rem;
+    }
+    header {
+      width: 100%;
+      max-width: 860px;
+      margin-bottom: 2rem;
+      text-align: center;
+      background: var(--card-bg);
+      padding: 1.5rem;
+      border-radius: 12px;
+      box-shadow: 0 4px 20px rgba(0, 0, 0, 0.4);
+    }
+    h1 {
+      font-size: 1.6rem;
+      font-weight: 700;
+      color: #ffffff;
+      margin-bottom: 0.5rem;
+    }
+    .badge {
+      display: inline-block;
+      background: rgba(99, 102, 241, 0.2);
+      color: #818cf8;
+      padding: 0.25rem 0.75rem;
+      border-radius: 9999px;
+      font-size: 0.85rem;
+      font-weight: 600;
+      margin-bottom: 0.75rem;
+    }
+    p.instructions {
+      color: var(--text-muted);
+      font-size: 0.95rem;
+      line-height: 1.5;
+    }
+    .reader-container {
+      width: 100%;
+      max-width: 860px;
+      display: flex;
+      flex-direction: column;
+      gap: 2rem;
+      align-items: center;
+    }
+    .manga-card {
+      background: var(--card-bg);
+      padding: 1rem;
+      border-radius: 12px;
+      box-shadow: 0 8px 30px rgba(0, 0, 0, 0.5);
+      position: relative;
+    }
+    .page-indicator {
+      font-size: 0.85rem;
+      color: var(--text-muted);
+      margin-bottom: 0.5rem;
+      text-align: right;
+    }
+    img.manga-page {
+      display: block;
+      width: 100%;
+      max-width: 800px;
+      height: auto;
+      border-radius: 6px;
+      user-select: none;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <span class="badge">InkShift Local Engine Test Harness</span>
+    <h1>Offline Manga Test Reader</h1>
+    <p class="instructions">
+      Trang thử nghiệm trực tiếp InkShift Chrome Extension với Engine dịch On-Device (DirectML + RapidOCR/Manga-OCR).
+      <br />
+      Mở popup InkShift trên thanh công cụ &rarr; Chọn <strong>Local DirectML (On-Device)</strong> &rarr; Bấm <strong>Re-scan Current Page</strong>.
+    </p>
+  </header>
+
+  <main class="reader-container">
+    <div class="manga-card">
+      <div class="page-indicator">Page 1 / 1</div>
+      <img
+        id="manga-panel-0"
+        class="manga-page"
+        src="./manga_sample_panel.png"
+        alt="InkShift Sample Manga Panel"
+        width="800"
+        height="1100"
+      />
+    </div>
+  </main>
+</body>
+</html>
