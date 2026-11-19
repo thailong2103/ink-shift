@@ -1,9 +1,9 @@
 # Spec: Manga Context Graph & In-Memory Prefetch Pipeline (F2 + F3 MVP)
 
 > **Module ID:** `manga-context-graph`  
-> **Status:** Implemented (Synced through Phase 47) — Approved by Solo Developer (@human) on 2026-10-22  
+> **Status:** Implemented (Synced through Phase 48) — Approved by Solo Developer (@human) on 2026-10-22  
 > **Date:** 2026-10-22 | **Last Synced:** 2026-11-19  
-> **Source ADR:** [ADR-010-manga-context-graph-and-sliding-window-prefetch.md](../decisions/ADR-010-manga-context-graph-and-sliding-window-prefetch.md), [ADR-020-resilient-cache-site-adapters-priority-queue-and-llm-repair.md](../decisions/ADR-020-resilient-cache-site-adapters-priority-queue-and-llm-repair.md)  
+> **Source ADR:** [ADR-010-manga-context-graph-and-sliding-window-prefetch.md](../decisions/ADR-010-manga-context-graph-and-sliding-window-prefetch.md), [ADR-020-resilient-cache-site-adapters-priority-queue-and-llm-repair.md](../decisions/ADR-020-resilient-cache-site-adapters-priority-queue-and-llm-repair.md), [ADR-021-hybrid-directml-cpu-split-idle-unload-and-script-dominance.md](../decisions/ADR-021-hybrid-directml-cpu-split-idle-unload-and-script-dominance.md)  
 > **Quality Gate:** [CONSTRAINTS.md](../../CONSTRAINTS.md) (Zero suppressions, strict types, coverage $\ge 80\%$)
 
 ---
@@ -203,7 +203,7 @@ app.state.local_semaphore = PriorityLocalLock()
 - [x] **SC-2 (Zero-Wait Page Flip):** When reading with prefetch enabled (depth $\ge 2$), flipping to Page $N+1$ results in a Cache HIT with overlay render latency $\le 16\text{ms}$ (0ms AI wait).
 - [x] **SC-3 (Zero Raw Image Disk Storage):** Inspection of `./data/` and local extension storage confirms $0\text{MB}$ of raw image files saved to disk during or after prefetching.
 - [x] **SC-4 (In-Flight Request Stampede Elimination & Cancellation):** Rapidly flipping pages deduplicates duplicate hashes while `CANCEL_PENDING_TRANSLATIONS` + `is_disconnected()` abort superseded requests.
-- [ ] **SC-5 (Local Hardware Memory Budget):** Under default DirectML (`limit_side_len=1920` on `PP-OCRv6_det_medium`), high-resolution pages currently peak at ~1.9–3.3 GB GPU VRAM (dedicated + shared); Phase 48 optimization (Hybrid DET CPU / SessionOptions / Idle Auto-Unload) is tracked to restore the $\le 2048\text{MB}$ budget.
+- [x] **SC-5 (Local Hardware Memory Budget):** Under Phase 48 `hybrid` default (`DET` on CPU at `limit_side_len=1280`, `YOLO11s-seg` + `PP-OCRv6_rec_medium` on DirectML) + 180s Idle Auto-Unload (`ADR-021`), active GPU VRAM locks at **608.0 MB** (<= 2048 MB budget with >3× headroom) and automatically releases down to **14.4 MB** when idle.
 - [x] **SC-6 (Quality Gate 100% Green):** TypeScript and Python test suites pass with 0 lint errors, 0 type errors, and 0 Floor Guard violations.
 
 ---

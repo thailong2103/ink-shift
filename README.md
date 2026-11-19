@@ -44,8 +44,8 @@
 - **Option G1 Gateway Pattern**: Detection executes once at the gateway level. Pre-detected bubble coordinates and polygons are shared with all downstream engines to eliminate redundant inference.
 
 ### 3. Dual-Engine Architecture (Local Hybrid & Cloud Vision)
-- **Local Engine (Unified Hybrid Pipeline — ADR-006, ADR-008, ADR-019, ADR-020)**:
-  - *Stage 1 (On-Device Perception)*: `OCRRouter.recognize_hybrid_page()` runs single-pass **`PP-OCRv6_medium`** (`rapidocr>=3.9.1` DirectML) fused with `YOLO11s-seg` speech bubble polygons, panel boundaries, and SFX exclusion masks (`IoMin`) across Japanese (vertical/horizontal), Chinese, and English, with automatic lazy fallback to **`korean_PP-OCRv5_rec_mobile`** (chapter-cached) and **2D Union-Find residual clustering** — 100% automated with zero manual language or layout toggles.
+- **Local Engine (Unified Hybrid Pipeline — ADR-006, ADR-008, ADR-019, ADR-020, ADR-021)**:
+  - *Stage 1 (On-Device Perception & Bounded VRAM)*: `OCRRouter.recognize_hybrid_page()` runs single-pass **`PP-OCRv6_medium`** in **`hybrid`** mode (`PP-OCRv6_det_medium` at `limit_side_len=1280` on CPU + `YOLO11s-seg` & `PP-OCRv6_rec_medium` on DirectML) fused with speech bubble polygons, panel boundaries, and SFX exclusion masks (`IoMin`) across Japanese (vertical/horizontal), Chinese, and English, with automatic lazy fallback to **`korean_PP-OCRv5_rec_mobile`** (chapter-cached), **2D Union-Find residual clustering**, dominant-script language routing, and **180s Idle Auto-Unload** (~608 MB active VRAM $\to$ ~14.4 MB when idle) — 100% automated with zero manual language or layout toggles.
   - *Stage 2 (Translator Registry)*: Coordinates 5 swappable translation adapters (with `<think>` stripping, malformed JSON repair, and alignment recovery on `LLMTextTranslator`, plus `is_fallback` zero-poisoning protection):
     1. `google-free`: Zero-cost web endpoint (~150ms, no API key required).
     2. `llm-google`: Text-only Gemini translation (>90% token savings vs Vision).
@@ -92,7 +92,7 @@ flowchart TD
         Registry["Engine Registry"]
         
         subgraph BranchA["Branch A: Local Engine (Unified Hybrid)"]
-            OCR["OCR Router<br/>├─ PP-OCRv6_medium DirectML (ZH/JA/EN + 2D Clustering)<br/>└─ Lazy korean_PP-OCRv5_rec_mobile Fallback"]
+            OCR["OCR Router<br/>├─ Hybrid (DET CPU 1280px + REC DirectML + 2D Union-Find)<br/>└─ Lazy korean_PP-OCRv5_rec_mobile + 180s Idle Auto-Unload"]
             Translator["Translator Registry<br/>├─ google-free (Web ~150ms)<br/>├─ llm-google (Gemini Text-Only)<br/>├─ llm-openai (GPT-4o-mini Text)<br/>├─ llm-anthropic (Claude Text)<br/>└─ llm-custom (LM Studio / Ollama / Qwen)"]
             OCR --> Translator
         end
@@ -321,7 +321,10 @@ INKSHIFT_LOCAL_DEFAULT_TRANSLATOR=llm-custom
 | `INKSHIFT_LOCAL_MODEL_DIR` | `./.cache/inkshift/models` | Directory path for stored ONNX model weights |
 | `INKSHIFT_LOCAL_DEFAULT_OCR` | `auto` | Automatic unified OCR strategy (`auto` recommended) |
 | `INKSHIFT_LOCAL_DEFAULT_TRANSLATOR` | `google-free` | Text translator: `google-free`, `llm-google`, `llm-openai`, `llm-anthropic`, `llm-custom` |
-| `INKSHIFT_LOCAL_EXECUTION_PROVIDER` | `directml` | ONNX execution provider: `directml`, `cpu` |
+| `INKSHIFT_LOCAL_EXECUTION_PROVIDER` | `hybrid` | ONNX provider preset: `hybrid` (DET CPU + YOLO/REC DirectML), `directml`, `cpu` |
+| `INKSHIFT_LOCAL_OCR_DET_LIMIT_SIDE_LEN` | `1280` | Max input side clamp (px) for DBNet text detector |
+| `INKSHIFT_LOCAL_IDLE_UNLOAD_SECONDS` | `180` | Idle seconds before releasing ONNX VRAM/RAM (`0` disables) |
+| `INKSHIFT_LOCAL_CPU_THREADS` | `0` | CPU intra-op thread count (`0` = auto `min(8, cpu_count)`) |
 | `INKSHIFT_LOCAL_LLM_TIMEOUT` | `120.0` | Timeout in seconds for local LLM text translation |
 | `INKSHIFT_LOCAL_OCR_DET_MODEL_PATH` | `.../PP-OCRv6_det_medium.onnx` | Custom path for PP-OCRv6 detection model |
 | `INKSHIFT_LOCAL_OCR_REC_MODEL_PATH` | `.../PP-OCRv6_rec_medium.onnx` | Custom path for PP-OCRv6 multilingual recognition model |
@@ -360,7 +363,7 @@ INKSHIFT_LOCAL_DEFAULT_TRANSLATOR=llm-custom
 | Pipeline Component | Underlying Technology | Typical Latency (GPU) | CPU Fallback | Notes |
 | :--- | :--- | :--- | :--- | :--- |
 | **Bubble & Layout Detection** | `YOLO11s-seg` ONNX | **115 – 176 ms** | ~415 – 480 ms | DirectML FP16 acceleration (`detect_full_layout`) |
-| **Unified Hybrid OCR** | `PP-OCRv6_medium` (`rapidocr>=3.9.1`) | **700 – 915 ms** | ~1.2 – 2.0 s | Single-pass ZH/JA/EN + 2D residual clustering (lazy Korean fallback) |
+| **Unified Hybrid OCR** | `PP-OCRv6_medium` (`rapidocr>=3.9.1`) | **~0.85 – 1.35 s** | ~1.2 – 2.0 s | Default `hybrid`: DET CPU (`1280px`) + REC DirectML (~608 MB VRAM active, ~14.4 MB idle) |
 | **Translation: Google Free** | Web Batch Dispatch | **150 – 200 ms** | ~150 ms | Zero cost, batch joined payload |
 | **Translation: Gemini Text-Only** | REST API (Text Prompt) | **300 – 450 ms** | ~350 ms | >90% token savings vs Vision LLM |
 | **Cloud Vision (End-to-End)** | Gemini 2.0 / GPT-4o Vision | **1,200 – 1,800 ms** | ~1,500 ms | Sends full page image; bypasses local OCR |
@@ -429,7 +432,7 @@ The project enforces a strict quality bar codified in [CONSTRAINTS.md](CONSTRAIN
 
 - **Zero Suppression Policy**: Zero `@ts-ignore`, `# type: ignore`, `# noqa`, or `eslint-disable` comments permitted.
 - **Strict Static Typing**: Both `tsc --noEmit` (TypeScript) and `mypy --strict` (Python) must pass with 0 errors.
-- **Comprehensive Test Suite**: 336 extension tests (25 Vitest files) and 365 backend tests (pytest) passing cleanly.
+- **Comprehensive Test Suite**: 336 extension tests (25 Vitest files) and 375 backend tests (pytest) passing cleanly.
 - **Floor Guard Security**: Automated scans verify zero hardcoded secrets or API tokens in git history.
 
 Execute the multi-stage quality gate locally:

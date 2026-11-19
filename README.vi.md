@@ -44,8 +44,8 @@
 - **Mô hình cổng Option G1 Gateway**: Quá trình nhận diện bóng thoại chỉ chạy duy nhất một lần tại tầng Gateway. Tọa độ và đa giác bóng thoại được chia sẻ trực tiếp cho các engine dịch phía sau, loại bỏ hoàn toàn việc tính toán trùng lặp.
 
 ### 3. Kiến Trúc Hai Engine Độc Lập (Local Hybrid & Cloud Vision)
-- **Local Engine (Quy trình Hybrid Thống Nhất — ADR-006, ADR-008, ADR-019, ADR-020)**:
-  - *Giai đoạn 1 (Nhận diện & Gom cụm On-Device)*: `OCRRouter.recognize_hybrid_page()` chạy 1 lượt **`PP-OCRv6_medium`** (`rapidocr>=3.9.1` DirectML) kết hợp mặt nạ bóng thoại/panel/SFX (`IoMin`) từ `YOLO11s-seg` trên cả tiếng Nhật (dọc/ngang), tiếng Trung và tiếng Anh, tự động fallback lười sang **`korean_PP-OCRv5_rec_mobile`** (lưu đệm theo chương) và gom cụm văn xuôi ngoài bóng thoại bằng **2D Union-Find** — tự động 100%, không cần chuyển chế độ hay ngôn ngữ thủ công.
+- **Local Engine (Quy trình Hybrid Thống Nhất — ADR-006, ADR-008, ADR-019, ADR-020, ADR-021)**:
+  - *Giai đoạn 1 (Nhận diện On-Device & Tối ưu VRAM)*: `OCRRouter.recognize_hybrid_page()` chạy 1 lượt **`PP-OCRv6_medium`** ở chế độ mặc định **`hybrid`** (`PP-OCRv6_det_medium` giới hạn cạnh `1280px` trên CPU + `YOLO11s-seg` & `PP-OCRv6_rec_medium` trên DirectML) kết hợp mặt nạ bóng thoại/panel/SFX (`IoMin`), tự động fallback lười sang **`korean_PP-OCRv5_rec_mobile`** (lưu đệm theo chương), phân cụm **2D Union-Find**, nhận diện ngôn ngữ theo chữ viết chi phối và tự giải phóng VRAM sau **180s** không dùng (~608 MB VRAM khi dịch $\to$ ~14.4 MB khi rảnh) — tự động 100%, không cần chuyển chế độ hay ngôn ngữ thủ công.
   - *Giai đoạn 2 (Kho bộ chuyển ngữ Translator Registry)*: Quản lý 5 bộ chuyển ngữ linh hoạt (hỗ trợ tách `<think>`, sửa lỗi JSON và căn chỉnh lại số lượng trên `LLMTextTranslator`, kèm cờ chống nhiễm độc cache `is_fallback`):
     1. `google-free`: Endpoint web miễn phí $0 (~150ms, không cần API key).
     2. `llm-google`: Dịch văn bản thuần qua Gemini (tiết kiệm hơn 90% token so với Vision).
@@ -92,7 +92,7 @@ flowchart TD
         Registry["Engine Registry"]
         
         subgraph BranchA["Nhánh A: Local Engine (Hybrid Thống Nhất)"]
-            OCR["OCR Router<br/>├─ PP-OCRv6_medium DirectML (ZH/JA/EN + 2D Union-Find)<br/>└─ Lazy korean_PP-OCRv5_rec_mobile Fallback"]
+            OCR["OCR Router<br/>├─ Hybrid (DET CPU 1280px + REC DirectML + 2D Union-Find)<br/>└─ Lazy korean_PP-OCRv5 + Tự giải phóng VRAM (180s Idle)"]
             Translator["Translator Registry<br/>├─ google-free (Web ~150ms)<br/>├─ llm-google (Gemini Text thuần)<br/>├─ llm-openai (GPT-4o-mini Text)<br/>├─ llm-anthropic (Claude Text)<br/>└─ llm-custom (LM Studio / Ollama / Qwen)"]
             OCR --> Translator
         end
@@ -301,7 +301,7 @@ INKSHIFT_LOCAL_DEFAULT_TRANSLATOR=llm-custom
 | Thành phần xử lý | Công nghệ bên dưới | Độ trễ thông thường (GPU) | Chạy bằng CPU | Ghi chú |
 | :--- | :--- | :--- | :--- | :--- |
 | **Nhận diện bóng thoại & Layout** | `YOLO11s-seg` ONNX | **115 – 176 ms** | ~415 – 480 ms | Tăng tốc DirectML FP16 (`detect_full_layout`) |
-| **OCR Hybrid Thống Nhất** | `PP-OCRv6_medium` (`rapidocr>=3.9.1`) | **700 – 915 ms** | ~1.2 – 2.0 s | Quét 1 lượt ZH/JA/EN + 2D Union-Find (fallback Hàn lười) |
+| **OCR Hybrid Thống Nhất** | `PP-OCRv6_medium` (`rapidocr>=3.9.1`) | **~0.85 – 1.35 s** | ~1.2 – 2.0 s | Mặc định `hybrid`: DET CPU (`1280px`) + REC DirectML (~608 MB VRAM khi dịch, ~14.4 MB khi rảnh) |
 | **Dịch: Google Free** | Web Batch Dispatch | **150 – 200 ms** | ~150 ms | Hoàn toàn miễn phí |
 | **Dịch: Gemini Text thuần** | REST API (Prompt chữ) | **300 – 450 ms** | ~350 ms | Tiết kiệm >90% token so với Vision |
 | **Cloud Vision (Trọn gói)** | Gemini 2.0 / GPT-4o Vision | **1.200 – 1.800 ms** | ~1.500 ms | Gửi cả trang ảnh; bỏ qua OCR máy |
@@ -370,7 +370,7 @@ Dự án áp dụng chặt chẽ hợp đồng kiểm soát chất lượng quy 
 
 - **Không sử dụng cờ bỏ qua lỗi**: Tuyệt đối không sử dụng `@ts-ignore`, `# type: ignore`, `# noqa` hay `eslint-disable`.
 - **Kiểm tra kiểu dữ liệu nghiêm ngặt**: Cả `tsc --noEmit` (TypeScript) và `mypy --strict` (Python) phải vượt qua với 0 lỗi.
-- **Bộ kiểm thử toàn diện**: 336 bài test tiện ích (25 tệp Vitest) và 365 bài test backend (pytest) đều đạt 100%.
+- **Bộ kiểm thử toàn diện**: 336 bài test tiện ích (25 tệp Vitest) và 375 bài test backend (pytest) đều đạt 100%.
 - **Bảo mật mã nguồn**: Bộ quét tự động đảm bảo không có bất kỳ API key hay bí mật nào bị commit vào lịch sử git.
 
 ---

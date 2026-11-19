@@ -1,13 +1,13 @@
 # Spec: On-Device Manga Translation Engine (`local-engine`)
 
 > **Module ID:** `local-engine`  
-> **Source ADR:** [ADR-006-local-engine-architecture.md](../decisions/ADR-006-local-engine-architecture.md), [ADR-007-yolo11-manga-detection-and-visual-grounding.md](../decisions/ADR-007-yolo11-manga-detection-and-visual-grounding.md), [ADR-008-consolidated-engine-architecture-and-shared-detection.md](../decisions/ADR-008-consolidated-engine-architecture-and-shared-detection.md), [ADR-017-ocr-consolidation-and-directml-rapidocr.md](../decisions/ADR-017-ocr-consolidation-and-directml-rapidocr.md), [ADR-019-ppocrv6-unified-hybrid-detection-and-auto-ocr.md](../decisions/ADR-019-ppocrv6-unified-hybrid-detection-and-auto-ocr.md), [ADR-020-resilient-cache-site-adapters-priority-queue-and-llm-repair.md](../decisions/ADR-020-resilient-cache-site-adapters-priority-queue-and-llm-repair.md)  
+> **Source ADR:** [ADR-006-local-engine-architecture.md](../decisions/ADR-006-local-engine-architecture.md), [ADR-007-yolo11-manga-detection-and-visual-grounding.md](../decisions/ADR-007-yolo11-manga-detection-and-visual-grounding.md), [ADR-008-consolidated-engine-architecture-and-shared-detection.md](../decisions/ADR-008-consolidated-engine-architecture-and-shared-detection.md), [ADR-017-ocr-consolidation-and-directml-rapidocr.md](../decisions/ADR-017-ocr-consolidation-and-directml-rapidocr.md), [ADR-019-ppocrv6-unified-hybrid-detection-and-auto-ocr.md](../decisions/ADR-019-ppocrv6-unified-hybrid-detection-and-auto-ocr.md), [ADR-020-resilient-cache-site-adapters-priority-queue-and-llm-repair.md](../decisions/ADR-020-resilient-cache-site-adapters-priority-queue-and-llm-repair.md), [ADR-021-hybrid-directml-cpu-split-idle-unload-and-script-dominance.md](../decisions/ADR-021-hybrid-directml-cpu-split-idle-unload-and-script-dominance.md)  
 > **Source Intent:** [docs/intent/local-engine.md](../intent/local-engine.md)  
 > **Parent Map:** [CAPABILITY_MAP.md](CAPABILITY_MAP.md)  
 > **Contract Spec:** [SPEC-api-contract.md](SPEC-api-contract.md)  
 > **Backend Spec:** [SPEC-backend-engine.md](SPEC-backend-engine.md)  
-> **Status:** Implemented (Synced through Phase 47) — Approved by Solo Developer (@human)  
-> **Phase:** Module 5 Execution Runtime & Phases 15–47 Hardening  
+> **Status:** Implemented (Synced through Phase 48) — Approved by Solo Developer (@human)  
+> **Phase:** Module 5 Execution Runtime & Phases 15–48 Hardening  
 > **Quality Gate:** [CONSTRAINTS.md](../../CONSTRAINTS.md) (Zero suppressions, strict types, coverage $\ge 80\%$)  
 > **Language Policy:** Official English document tracked in Git.
 
@@ -16,8 +16,8 @@
 ## 1. Assumptions Surface
 
 Before proceeding to implementation, the following architectural assumptions are recorded:
-1. **Target Hardware & Acceleration:** Target workstation runs Windows 11 with an AMD Ryzen 7 8845HS APU (Zen 4, 8C/16T, AVX-512) and AMD Radeon 780M iGPU (RDNA 3, 12 CUs) backed by 32GB RAM (UMA). Microsoft DirectML via `onnxruntime-directml` serves as the primary hardware acceleration provider, with `CPUExecutionProvider` (AVX-512) as the automated node fallback.
-2. **Permanent In-Memory Session Cache:** Given 32GB unified RAM and lightweight model weights (~39.3MB for YOLO11s-seg + ~139MB for `PP-OCRv6_medium`, plus optional ~13.5MB Korean `PP-OCRv5` recognizer), all ONNX `InferenceSession` instances (`YOLO11s-seg`, `PP-OCRv6_det_medium`, `PP-OCRv6_rec_medium`) remain resident in memory across requests. No unloading, disk re-reading, or memory deallocation occurs between page translations.
+1. **Target Hardware & Hybrid Acceleration (ADR-021):** Target workstation runs Windows 11 with an AMD Ryzen 7 8845HS APU (Zen 4, 8C/16T, AVX-512) and AMD Radeon 780M iGPU (RDNA 3, 12 CUs) backed by 32GB RAM (UMA). The default `hybrid` execution provider runs `YOLO11s-seg` and `PP-OCRv6_rec_medium` (+ lazy Korean `PP-OCRv5`) on Microsoft DirectML (`DmlExecutionProvider`, `enable_mem_pattern=False`, `ORT_SEQUENTIAL`) while executing `PP-OCRv6_det_medium` (DBNet) on `CPUExecutionProvider` (bounded `INKSHIFT_LOCAL_CPU_THREADS`), capping active GPU VRAM at ~608 MB. Both pure `directml` and pure `cpu` presets remain configurable via `.env`.
+2. **Bounded Session Lifecycle with Idle Auto-Unload (180s TTL):** Given ~39.3MB (`YOLO11s-seg`) + ~139MB (`PP-OCRv6_medium`) + ~13.5MB (`korean_PP-OCRv5_rec_mobile`) ONNX weights, sessions initialize lazily on first inference and remain cached across page flips during active reading. When idle past `INKSHIFT_LOCAL_IDLE_UNLOAD_SECONDS` (default `180s`; `0` disables), a `PriorityLocalLock`-gated FastAPI background task automatically releases ONNX `InferenceSession` instances and triggers `gc.collect()`, dropping GPU VRAM from ~608 MB down to ~14.4 MB so concurrent local LLM runtimes (e.g., LM Studio) can claim VRAM freely.
 3. **Model Weight Storage:** Pre-trained ONNX model files are stored locally under `.cache/inkshift/models/` (`yolo11s-seg.onnx`, `PP-OCRv6_det_medium.onnx`, `PP-OCRv6_rec_medium.onnx`, and lazy `korean_PP-OCRv5_rec_mobile.onnx`). Comic-Text-Detector weights are deprecated and purged.
 4. **Coordinate Integrity:** Coordinate outputs strictly comply with `api-contract`: normalized integer bounding boxes $[ymin, xmin, ymax, xmax]$ in $[0, 1000]$, and simplified polygon contours as relative percentages $[0.0, 100.0]$.
 5. **Zero API Cost by Default:** Default translation runs through `deep-translator` using Google Translate web batch requests, requiring $0.00$ API spend. An optional `LLMTextTranslator` mode reuses `gemini_api_key` and `xkiro_api_key` from Module 3 for enhanced literary phrasing.
@@ -34,7 +34,7 @@ flowchart TD
     DET --> POST["Stage 1.1: Mask Decoding & RDP Compression<br/>(Chaikin B-Spline Contours, 18-25 Relative % Vertices)"]
     POST --> SORT["Stage 1.2: 2-Tier RTL Reading Order Sorter<br/>(Panel Top-Right-First + Score = 1.5Y - X)"]
 
-    SORT --> ROU["Stage 2: OCRRouter.recognize_hybrid_page<br/>(1-Pass PP-OCRv6_medium DirectML + Lazy Korean Fallback)"]
+    SORT --> ROU["Stage 2: OCRRouter.recognize_hybrid_page<br/>(Hybrid: DET CPU + REC DirectML + Lazy Korean Fallback)"]
     ROU --> FUSE["Spatial Fusion + Guards<br/>(IoMin SFX Exclusion, Panel/Bubble Barriers, 2D Union-Find)"]
     FUSE --> MERGE["Ordered Source Text Blocks<br/>(Bubbles + Residual Narration Clusters)"]
 
@@ -272,11 +272,11 @@ class LocalTranslationEngine(BaseTranslationEngine):
 ### 6.2 Unified Hybrid Auto-OCR Execution Strategy (`OCRRouter.recognize_hybrid_page`)
 Per ADR-019 and Phase 47, `OCRRouter.recognize_hybrid_page()` eliminates legacy manual mode/language branching (`MangaOCR` Path B is removed) in favor of a single-pass unified pipeline:
 
-1. **Single-Pass Split Detection (`PP-OCRv6_det_medium`):** Runs DBNet once on the full BGR page (`limit_side_len=1920`, `thresh=0.2`, `box_thresh=0.35`, `unclip_ratio=1.8`) returning oriented text quads.
+1. **Single-Pass Split Detection (`PP-OCRv6_det_medium`):** Runs DBNet once on the full BGR page (`limit_side_len=1280` configurable via `INKSHIFT_LOCAL_OCR_DET_LIMIT_SIDE_LEN`, `thresh=0.2`, `box_thresh=0.35`, `unclip_ratio=1.8`) on `CPUExecutionProvider` under default `hybrid` mode, returning oriented text quads while eliminating high-resolution tick noise and DirectML workspace spikes.
 2. **Spatial Partition & IoMin SFX Exclusion:**
    - **Bucket A (Curved Speech Bubbles):** Quads whose normalized centroid falls within `work_items[i].crop_box` (with 6‰ margin, choosing smallest enclosing bubble).
    - **Bucket B (Residual Non-Bubble Lines):** Quads outside all speech bubbles that do NOT overlap YOLO `sfx_boxes` via `_overlaps_any_box_iomin()` (`inter_area / min(q_area, sfx_area) >= 0.40`).
-3. **Pre-Recognition Furigana Filter & One-Shot Crop Reuse:** Vertical ruby strips (`w < 0.55 * median_w` immediately right of vertical columns) are excluded before cropping (`crop_quad()`). All remaining crops run in 1 batched inference call on `PP-OCRv6_rec_medium` (~18,708 chars covering ZH/JA/EN). If bubble crops yield low confidence (`< 0.72` avg or `> 35%` empty without Kana), `OCRRouter` lazily invokes `korean_PP-OCRv5_rec_mobile` reusing the exact same cropped arrays and caches `"ko"` by `chapter_id`.
+3. **Pre-Recognition Furigana Filter & One-Shot Crop Reuse:** Vertical ruby strips (`w < 0.55 * median_w` immediately right of vertical columns) are excluded before cropping (`crop_quad()`). All remaining crops run in 1 batched inference call on `PP-OCRv6_rec_medium` (`DmlExecutionProvider`, ~18,708 chars covering ZH/JA/EN). If bubble crops yield low confidence (`< 0.72` avg or `> 35%` empty without Kana), `OCRRouter` lazily invokes `korean_PP-OCRv5_rec_mobile` reusing the exact same cropped arrays and caches `"ko"` by `chapter_id`. Language identification (`detect_page_language()`) uses dominant-script ratios (`latin_count >= 8` and `latin_count >= 4 * cjk_total`) so stray false-positive CJK characters cannot hijack English pages.
 4. **3×3 Ambiguous Square CJK Guard:** Square tight CJK speech bubbles on vertically dominant pages are rotated 90° CCW (`recheck_ambiguous_square_bubble`) if DBNet sliced vertical columns horizontally.
 5. **Phase 47 2D Union-Find Residual Clustering & Noise Guard (`text_assembler.py`, `router.py`):**
    - `cluster_lines_bidirectional()` partitions residual lines using **distance-ordered 2D Union-Find** (`_union_find_cluster_entries`, `<= 2.8x` font-scale parity) instead of greedy 1-pass scans, preventing cross-panel X-column or Y-row bridging.
@@ -333,17 +333,17 @@ def assemble_comic_lines(raw_lines: list[str]) -> str:
 
 ---
 
-## 8. Memory Management & DirectML Session Lifecycle
+## 8. Memory Management & Hybrid DirectML/CPU Session Lifecycle
 
-1. **Lazy Session Initialization:** `YOLO11Detector._ensure_session()`, `RapidOCRAdapter._ensure_det_and_rec()`, and `_ensure_ko_rec()` load ONNX Runtime sessions lazily on first inference request (not at FastAPI startup, where baseline Python consumes ~61 MB RSS and 0 MB GPU VRAM). `RapidOCRAdapter._create_ort_session()` injects explicit `DmlExecutionProvider` (`device_id=0`) / `CPUExecutionProvider` `InferenceSession` objects to bypass the `rapidocr==3.9.1` OmegaConf `DictConfig` bug.
-2. **Provider Configuration:**
-   ```python
-   providers = [
-       ("DmlExecutionProvider", {"device_id": 0}),
-       "CPUExecutionProvider",
-   ]
-   ```
-3. **Session Reuse & Measured Footprint:** Loaded DirectML sessions currently remain resident for process lifetime. Measured footprint on AMD Radeon 780M reaches ~1.31 GB GPU (Dedicated + Shared) / ~1.9 GB RAM on 720×1024 pages and ~1.93–3.31 GB GPU / ~2.6–3.97 GB RAM on 1125×1600–2200×3100 pages under `limit_side_len=1920`, whereas `CPUExecutionProvider` uses 0 MB GPU VRAM (~850–1,118 MB RAM). *(Phase 48 optimization for `DET`/`REC` hybrid split, `limit_side_len`, and idle session unloading is queued next.)*
+1. **Lazy Session Initialization:** `YOLO11Detector._ensure_session()`, `RapidOCRAdapter._ensure_det_and_rec()`, and `_ensure_ko_rec()` load ONNX Runtime sessions lazily on first inference request (not at FastAPI startup, where baseline Python consumes ~61 MB WS and 0 MB GPU VRAM). `RapidOCRAdapter._create_ort_session()` and `YOLO11Detector._ensure_session()` bypass the `rapidocr==3.9.1` OmegaConf `DictConfig` bug and share uniform sequential `SessionOptions`.
+2. **Hybrid Provider & SessionOptions Configuration (ADR-021):**
+   - `INKSHIFT_LOCAL_EXECUTION_PROVIDER=hybrid` *(default)*:
+     - `YOLO11s-seg` & `PP-OCRv6_rec_medium` (+ lazy `korean_PP-OCRv5_rec_mobile`): `[("DmlExecutionProvider", {"device_id": 0}), "CPUExecutionProvider"]` with `enable_mem_pattern = False` and `execution_mode = ORT_SEQUENTIAL` (preserving DirectML arena reuse so latency stays optimal).
+     - `PP-OCRv6_det_medium` (DBNet): `["CPUExecutionProvider"]` with `intra_op_num_threads = INKSHIFT_LOCAL_CPU_THREADS` (default `min(8, max(1, os.cpu_count() or 4))`) and `limit_side_len = INKSHIFT_LOCAL_OCR_DET_LIMIT_SIDE_LEN` (default `1280`).
+   - Alternate modes: `"directml"` (GPU for all 3 models; ~1.89–3.31 GB VRAM) and `"cpu"` (`0 MB` GPU VRAM; ~2.17s/page).
+3. **Bounded Idle Auto-Unload & Measured Footprint (Verified Hardware Telemetry):**
+   - On `1125×1600` pages under default `hybrid` + `limit_side_len=1280`, measured active footprint is **608.0 MB GPU VRAM** (36.8 MB dedicated + 571.2 MB shared, fixed regardless of source image resolution) and ~1.2–1.5s warm inference latency.
+   - FastAPI `lifespan()` spawns `_idle_unload_loop` checking `maybe_unload_idle_local_models()` gated behind `PriorityLocalLock` (`P2` priority + double-checked timestamps). When idle for `INKSHIFT_LOCAL_IDLE_UNLOAD_SECONDS` (default `180.0s`, `0` disables), `unload_session()` and `unload_sessions()` drop GPU VRAM to **14.4 MB** (~22 MB inclusive of process overhead) and cut RAM Working Set roughly in half; subsequent requests transparently reload sessions with zero memory leak (verified reloading back to **608.0 MB** GPU VRAM).
 
 ---
 
