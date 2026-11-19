@@ -74,15 +74,15 @@ describe('Service Worker Message Handling', () => {
 
     expect(response.success).toBe(true);
     expect(response.traceId).toBe('trace-img-1');
-    expect(mockGateway.checkCache).toHaveBeenCalledWith('hash-hit', undefined, undefined, 'vi', undefined);
+    expect(mockGateway.checkCache).toHaveBeenCalledWith('hash-hit', undefined, undefined, 'vi');
     expect(mockGateway.requestTranslation).not.toHaveBeenCalled();
   });
 
-  it('forwards reader_mode through checkCache and requestTranslation', async () => {
+  it('forwards custom_prompt through checkCache and requestTranslation without manual layout or lang fields', async () => {
     const freshResponse: TranslationResponse = {
       success: true,
       page_hash: 'hash-text',
-      engine_used: 'local:text',
+      engine_used: 'local',
       execution_time_ms: 100,
       from_cache: false,
       blocks: [],
@@ -97,7 +97,7 @@ describe('Service Worker Message Handling', () => {
       clientWidth: 800,
       clientHeight: 1200,
       engine: 'local',
-      reader_mode: 'text',
+      custom_prompt: 'Xưng hô kiếm hiệp',
     };
 
     const mockFetcher = vi.fn().mockResolvedValue({
@@ -112,9 +112,9 @@ describe('Service Worker Message Handling', () => {
     const response = await handleIPCMessage(msg, undefined, mockGateway as BackendGateway, mockFetcher);
 
     expect(response.success).toBe(true);
-    expect(mockGateway.checkCache).toHaveBeenCalledWith('hash-text', 'local', undefined, 'vi', 'text');
+    expect(mockGateway.checkCache).toHaveBeenCalledWith('hash-text', 'local', undefined, 'vi', 'Xưng hô kiếm hiệp');
     expect(mockGateway.requestTranslation).toHaveBeenCalledWith(
-      expect.objectContaining({ reader_mode: 'text', engine: 'local' })
+      expect.objectContaining({ custom_prompt: 'Xưng hô kiếm hiệp', engine: 'local' })
     );
   });
 

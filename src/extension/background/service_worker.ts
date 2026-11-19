@@ -92,12 +92,12 @@ export async function handleIPCMessage(
     }
 
     case 'TRANSLATE_IMAGE': {
-      const { traceId, imageIndex, imageUrl, engine, provider, model, translator, sourceLang, chapterUrl, forceRefresh, custom_prompt, safe_mask, reader_mode, priority } = msg.payload;
-      logger.info(`[${traceId}] Translating image #${imageIndex}: ${imageUrl} (lang: ${sourceLang || 'auto'}, readerMode: ${reader_mode || 'manga'}, priority: ${priority || 'P0'}, forceRefresh: ${Boolean(forceRefresh)})`, { traceId, imageIndex, imageUrl });
+      const { traceId, imageIndex, imageUrl, engine, provider, model, translator, chapterUrl, forceRefresh, custom_prompt, safe_mask, priority } = msg.payload;
+      logger.info(`[${traceId}] Translating image #${imageIndex}: ${imageUrl} (priority: ${priority || 'P0'}, forceRefresh: ${Boolean(forceRefresh)})`, { traceId, imageIndex, imageUrl });
 
       // Step 1: Early in-flight deduplication before network fetch
       const canonicalUrl = getCanonicalUrlKey(imageUrl);
-      const dedupeKey = !forceRefresh ? `${canonicalUrl}:${engine || ''}:${translator || ''}:${provider || ''}:${model || ''}:${sourceLang || ''}:${custom_prompt || ''}:${safe_mask !== undefined ? safe_mask : ''}:${reader_mode || 'manga'}` : null;
+      const dedupeKey = !forceRefresh ? `${canonicalUrl}:${engine || ''}:${translator || ''}:${provider || ''}:${model || ''}:${custom_prompt || ''}:${safe_mask !== undefined ? safe_mask : ''}` : null;
       if (dedupeKey) {
         const existingPromise = inFlightRequests.get(dedupeKey);
         if (existingPromise) {
@@ -131,8 +131,8 @@ export async function handleIPCMessage(
           // Step 3: Check SQLite translation cache on backend unless forceRefresh is true
           if (!forceRefresh) {
             const cached = custom_prompt && custom_prompt.trim()
-              ? await gateway.checkCache(processed.sha256Hex, engine, translator, 'vi', reader_mode, custom_prompt)
-              : await gateway.checkCache(processed.sha256Hex, engine, translator, 'vi', reader_mode);
+              ? await gateway.checkCache(processed.sha256Hex, engine, translator, 'vi', custom_prompt)
+              : await gateway.checkCache(processed.sha256Hex, engine, translator, 'vi');
             if (taskAbortController.signal.aborted) {
               return createErrorResponse({ code: 'TRANSLATION_CANCELLED', message: 'Translation cancelled during cache check' }, traceId);
             }
@@ -153,12 +153,10 @@ export async function handleIPCMessage(
             provider,
             model,
             translator,
-            source_lang: sourceLang,
             chapter_url: chapterUrl,
             force_refresh: forceRefresh,
             custom_prompt,
             safe_mask,
-            reader_mode,
             ...(priority ? { priority } : {}),
           });
 

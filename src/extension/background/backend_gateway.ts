@@ -178,7 +178,6 @@ export class BackendGateway {
     engine?: string,
     translator?: string,
     targetLang?: string,
-    readerMode?: 'manga' | 'text',
     customPrompt?: string
   ): Promise<TranslationResponse | null> {
     return this.executeWithRetry(async () => {
@@ -195,9 +194,6 @@ export class BackendGateway {
         }
         if (targetLang) {
           queryParams.set('target_lang', targetLang);
-        }
-        if (readerMode && readerMode !== 'manga') {
-          queryParams.set('reader_mode', readerMode);
         }
         if (customPrompt && customPrompt.trim()) {
           queryParams.set('custom_prompt', customPrompt.trim());

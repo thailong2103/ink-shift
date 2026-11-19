@@ -156,7 +156,7 @@ describe('PrefetchScheduler', () => {
     scheduler.cancelAllTasks();
   });
 
-  it('forwards custom engine, provider, translator, model, and sourceLang options to TRANSLATE_IMAGE', async () => {
+  it('forwards custom engine, provider, translator, and model options to TRANSLATE_IMAGE', async () => {
     const scheduler = new PrefetchScheduler({
       enabled: true,
       depth: 3,
@@ -164,7 +164,6 @@ describe('PrefetchScheduler', () => {
       provider: 'custom',
       translator: 'custom-model',
       model: 'qwen/qwen3.8-omni-flash:free',
-      sourceLang: 'ja',
     });
 
     scheduler.setChapterManifest(mockManifest, 1);
@@ -178,7 +177,6 @@ describe('PrefetchScheduler', () => {
           provider: 'custom',
           translator: 'custom-model',
           model: 'qwen/qwen3.8-omni-flash:free',
-          sourceLang: 'ja',
         }),
       })
     );

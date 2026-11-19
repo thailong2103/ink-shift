@@ -19,7 +19,6 @@ export interface EngineSelectorElements {
   providerContainerEl?: HTMLElement | null;
   translatorSelectEl?: HTMLSelectElement | null;
   translatorContainerEl?: HTMLElement | null;
-  sourceLangContainerEl?: HTMLElement | null;
   modelContainerEl?: HTMLElement | null;
   modelSearchInputEl?: HTMLInputElement | null;
   modelDropdownListEl?: HTMLElement | null;
@@ -119,7 +118,6 @@ export class EngineSelectorUI {
       engineSelectEl,
       providerContainerEl,
       translatorContainerEl,
-      sourceLangContainerEl,
       modelContainerEl,
       translatorSelectEl,
     } = this.elements;
@@ -132,10 +130,6 @@ export class EngineSelectorUI {
 
     if (translatorContainerEl) {
       translatorContainerEl.classList.toggle('hidden', engine !== 'local');
-    }
-
-    if (sourceLangContainerEl) {
-      sourceLangContainerEl.classList.toggle('hidden', engine === 'cloud');
     }
 
     if (modelContainerEl) {

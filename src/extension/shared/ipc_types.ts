@@ -59,10 +59,6 @@ export interface TranslateImagePayload {
    */
   model?: string;
   /**
-   * Optional source language override ('auto' | 'ja' | 'en' | 'ko' | 'zh').
-   */
-  sourceLang?: string;
-  /**
    * Optional chapter URL or page URL context for chapter-level language caching.
    */
   chapterUrl?: string;
@@ -78,10 +74,6 @@ export interface TranslateImagePayload {
    * Optional flag to mask non-text background to bypass safety filters (None/undefined = auto-recover, true = always mask).
    */
   safe_mask?: boolean;
-  /**
-   * Optional reading layout mode ('manga' | 'text').
-   */
-  reader_mode?: 'manga' | 'text';
   /**
    * Optional execution priority ('P0' = on-screen, 'P1' = next page, 'P2' = lookahead prefetch).
    */

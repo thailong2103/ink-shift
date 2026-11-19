@@ -25,9 +25,9 @@ import {
   selectedModelsByProvider,
   getActiveProvider,
   normalizeProvider,
-  updateReaderModeToggleUI,
-  setReaderMode,
 } from '../../src/extension/popup/popup';
+import fs from 'node:fs';
+import path from 'node:path';
 import type { IPCMessage, IPCResponse, DiscoveredModelsData, ProviderSettingsData, SaveProviderSettingsData } from '../../src/extension/shared/ipc_types';
 
 describe('Popup Settings Controller', () => {
@@ -139,18 +139,6 @@ describe('Popup Settings Controller', () => {
           </details>
 
           <div class="setting-item">
-            <label for="reader-mode-toggle">Chế độ đọc</label>
-            <div class="segmented-control" id="reader-mode-toggle" role="radiogroup" aria-label="Chế độ đọc">
-              <button type="button" class="segment-btn active" data-mode="manga" role="radio" aria-checked="true">
-                <span>📖 Manga</span>
-              </button>
-              <button type="button" class="segment-btn" data-mode="text" role="radio" aria-checked="false">
-                <span>📄 Văn bản</span>
-              </button>
-            </div>
-          </div>
-
-          <div class="setting-item">
             <label for="engine-select">Translation Engine</label>
             <select id="engine-select">
               <option value="auto">Tự động (Auto)</option>
@@ -197,15 +185,6 @@ describe('Popup Settings Controller', () => {
             <textarea id="custom-prompt-input"></textarea>
             <button type="button" class="quick-style-btn" data-style="kiem-hiep">Kiếm hiệp</button>
             <button type="button" class="quick-style-btn" data-style="hai-huoc">Hài hước</button>
-          </div>
-          <div id="source-lang-container" class="setting-item conditional-item">
-            <label for="source-lang-select">Source Language</label>
-            <select id="source-lang-select">
-              <option value="auto">Tự động (Auto)</option>
-              <option value="ja">Tiếng Nhật (Manga)</option>
-              <option value="en">Tiếng Anh (Comic)</option>
-              <option value="ko">Tiếng Hàn (Manhwa)</option>
-            </select>
           </div>
           <div class="setting-item toggle-row">
             <label for="overlay-visibility-toggle">Hiển thị bản dịch</label>
@@ -272,7 +251,6 @@ describe('Popup Settings Controller', () => {
       engine: 'cloud',
       provider: 'google',
       translator: 'google-free',
-      sourceLang: 'ja',
       opacity: 'opaque',
       overlayOpacity: 95,
       overlayColor: '#18181b',
@@ -363,37 +341,31 @@ describe('Popup Settings Controller', () => {
   });
 
   describe('Conditional Dropdown Controls', () => {
-    it('shows provider container and hides translator and source-lang containers when engine is cloud', () => {
+    it('shows provider container and hides translator container when engine is cloud', () => {
       updateConditionalVisibility('cloud');
       const providerContainer = document.getElementById('provider-container')!;
       const translatorContainer = document.getElementById('translator-container')!;
-      const sourceLangContainer = document.getElementById('source-lang-container')!;
 
       expect(providerContainer.classList.contains('hidden')).toBe(false);
       expect(translatorContainer.classList.contains('hidden')).toBe(true);
-      expect(sourceLangContainer.classList.contains('hidden')).toBe(true);
     });
 
-    it('shows translator and source-lang containers and hides provider container when engine is local', () => {
+    it('shows translator container and hides provider container when engine is local', () => {
       updateConditionalVisibility('local');
       const providerContainer = document.getElementById('provider-container')!;
       const translatorContainer = document.getElementById('translator-container')!;
-      const sourceLangContainer = document.getElementById('source-lang-container')!;
 
       expect(providerContainer.classList.contains('hidden')).toBe(true);
       expect(translatorContainer.classList.contains('hidden')).toBe(false);
-      expect(sourceLangContainer.classList.contains('hidden')).toBe(false);
     });
 
-    it('hides provider and translator containers but shows source-lang container when engine is auto', () => {
+    it('hides provider and translator containers when engine is auto', () => {
       updateConditionalVisibility('auto');
       const providerContainer = document.getElementById('provider-container')!;
       const translatorContainer = document.getElementById('translator-container')!;
-      const sourceLangContainer = document.getElementById('source-lang-container')!;
 
       expect(providerContainer.classList.contains('hidden')).toBe(true);
       expect(translatorContainer.classList.contains('hidden')).toBe(true);
-      expect(sourceLangContainer.classList.contains('hidden')).toBe(false);
     });
   });
 
@@ -404,7 +376,6 @@ describe('Popup Settings Controller', () => {
       const engineSelect = document.getElementById('engine-select') as HTMLSelectElement;
       const providerSelect = document.getElementById('provider-select') as HTMLSelectElement;
       const translatorSelect = document.getElementById('translator-select') as HTMLSelectElement;
-      const sourceLangSelect = document.getElementById('source-lang-select') as HTMLSelectElement;
       const debugToggle = document.getElementById('debug-geometry-toggle') as HTMLInputElement;
       const providerContainer = document.getElementById('provider-container')!;
       const translatorContainer = document.getElementById('translator-container')!;
@@ -421,7 +392,6 @@ describe('Popup Settings Controller', () => {
       expect(translatorSelect.value).toBe('google-free');
       expect(providerContainer.classList.contains('hidden')).toBe(false);
       expect(translatorContainer.classList.contains('hidden')).toBe(true);
-      expect(sourceLangSelect.value).toBe('ja');
       expect(visibilityToggle.checked).toBe(true);
       expect(opacitySlider.value).toBe('95');
       expect(opacityLabel.textContent).toBe('95%');
@@ -450,9 +420,6 @@ describe('Popup Settings Controller', () => {
 
       await saveSetting('translator', 'llm-text');
       expect(mockStorageSet).toHaveBeenCalledWith({ translator: 'llm-text' });
-
-      await saveSetting('sourceLang', 'ko');
-      expect(mockStorageSet).toHaveBeenCalledWith({ sourceLang: 'ko' });
 
       await saveSetting('overlayVisible', false);
       expect(mockStorageSet).toHaveBeenCalledWith({ overlayVisible: false });
@@ -1261,72 +1228,13 @@ describe('Popup Settings Controller', () => {
       });
     });
 
-    describe('Dual-Mode Reader Layout Controls (Phase 43)', () => {
-      it('initializes reader mode toggle with manga mode active by default', async () => {
-        mockStorageGet.mockResolvedValue({});
-        await loadSettings();
-
-        const mangaBtn = document.querySelector('.segment-btn[data-mode="manga"]') as HTMLButtonElement;
-        const textBtn = document.querySelector('.segment-btn[data-mode="text"]') as HTMLButtonElement;
-
-        expect(mangaBtn.classList.contains('active')).toBe(true);
-        expect(mangaBtn.getAttribute('aria-checked')).toBe('true');
-        expect(textBtn.classList.contains('active')).toBe(false);
-        expect(textBtn.getAttribute('aria-checked')).toBe('false');
-      });
-
-      it('loads persisted text reader mode and activates text button', async () => {
-        mockStorageGet.mockResolvedValue({ reader_mode: 'text' });
-        await loadSettings();
-
-        const mangaBtn = document.querySelector('.segment-btn[data-mode="manga"]') as HTMLButtonElement;
-        const textBtn = document.querySelector('.segment-btn[data-mode="text"]') as HTMLButtonElement;
-
-        expect(mangaBtn.classList.contains('active')).toBe(false);
-        expect(mangaBtn.getAttribute('aria-checked')).toBe('false');
-        expect(textBtn.classList.contains('active')).toBe(true);
-        expect(textBtn.getAttribute('aria-checked')).toBe('true');
-      });
-
-      it('persists reader_mode to chrome.storage.local and triggers rescan on button click', async () => {
-        mockTabsQuery.mockResolvedValue([{ id: 101, url: 'https://mangadex.org/chapter/123/1' }]);
-        mockTabsSendMessage.mockResolvedValue({ success: true, count: 1 });
-        await initPopup();
-        mockTabsSendMessage.mockClear();
-
-        await setReaderMode('text');
-
-        expect(mockStorageSet).toHaveBeenCalledWith({ reader_mode: 'text' });
-        const textBtn = document.querySelector('.segment-btn[data-mode="text"]') as HTMLButtonElement;
-        expect(textBtn.classList.contains('active')).toBe(true);
-        expect(mockTabsSendMessage).toHaveBeenCalledWith(101, { type: 'RESCAN_PAGE' }, { frameId: 0 });
-      });
-
-      it('wires button click to change reader mode in initPopup', async () => {
-        mockTabsQuery.mockResolvedValue([{ id: 101, url: 'https://mangadex.org/chapter/123/1' }]);
-        mockTabsSendMessage.mockResolvedValue({ success: true, count: 1 });
-        await initPopup();
-        mockTabsSendMessage.mockClear();
-
-        const textBtn = document.querySelector('.segment-btn[data-mode="text"]') as HTMLButtonElement;
-        textBtn.click();
-        await new Promise((r) => setTimeout(r, 10));
-
-        expect(mockStorageSet).toHaveBeenCalledWith({ reader_mode: 'text' });
-        expect(textBtn.classList.contains('active')).toBe(true);
-      });
-
-      it('allows switching back to manga mode and updates aria attributes', async () => {
-        mockTabsQuery.mockResolvedValue([{ id: 101, url: 'https://mangadex.org/chapter/123/1' }]);
-        mockTabsSendMessage.mockResolvedValue({ success: true, count: 1 });
-        await initPopup();
-
-        await setReaderMode('manga');
-
-        expect(mockStorageSet).toHaveBeenCalledWith({ reader_mode: 'manga' });
-        const mangaBtn = document.querySelector('.segment-btn[data-mode="manga"]') as HTMLButtonElement;
-        expect(mangaBtn.classList.contains('active')).toBe(true);
-        expect(mangaBtn.getAttribute('aria-checked')).toBe('true');
+    describe('Automated Layout & Language UX Contract (Phase 46 / ADR-019)', () => {
+      it('omits manual reader-mode toggle and source-lang dropdown from popup.html', () => {
+        const htmlPath = path.resolve(__dirname, '../../src/extension/popup/popup.html');
+        const htmlContent = fs.readFileSync(htmlPath, 'utf-8');
+        expect(htmlContent).not.toContain('reader-mode-toggle');
+        expect(htmlContent).not.toContain('source-lang-container');
+        expect(htmlContent).not.toContain('source-lang-select');
       });
     });
   });

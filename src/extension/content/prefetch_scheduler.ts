@@ -32,10 +32,8 @@ export interface PrefetchSchedulerOptions {
   provider?: string;
   translator?: string;
   model?: string;
-  sourceLang?: string;
   customPrompt?: string;
   safeMask?: boolean;
-  reader_mode?: 'manga' | 'text';
   onPageReady?: (pageNumber: number, response: TranslationResponse, imageUrl: string, chapterId?: string) => void;
   onPageFailed?: (pageNumber: number, error: unknown) => void;
 }
@@ -55,10 +53,8 @@ export class PrefetchScheduler {
   private provider?: string;
   private translator?: string;
   private model?: string;
-  private sourceLang?: string;
   private customPrompt?: string;
   private safeMask?: boolean;
-  private readerMode: 'manga' | 'text' = 'manga';
   private onPageReady?: (pageNumber: number, response: TranslationResponse, imageUrl: string, chapterId?: string) => void;
   private onPageFailed?: (pageNumber: number, error: unknown) => void;
 
@@ -79,12 +75,8 @@ export class PrefetchScheduler {
     this.provider = options?.provider;
     this.translator = options?.translator;
     this.model = options?.model;
-    this.sourceLang = options?.sourceLang;
     this.customPrompt = options?.customPrompt;
     this.safeMask = options?.safeMask !== undefined ? options.safeMask : true;
-    if (options?.reader_mode) {
-      this.readerMode = options.reader_mode;
-    }
     this.onPageReady = options?.onPageReady;
     this.onPageFailed = options?.onPageFailed;
   }
@@ -97,19 +89,15 @@ export class PrefetchScheduler {
     provider?: string;
     translator?: string;
     model?: string;
-    sourceLang?: string;
     customPrompt?: string;
     safeMask?: boolean;
-    reader_mode?: 'manga' | 'text';
   }): void {
     if (config.engine !== undefined) this.engine = config.engine;
     if (config.provider !== undefined) this.provider = config.provider;
     if (config.translator !== undefined) this.translator = config.translator;
     if (config.model !== undefined) this.model = config.model;
-    if (config.sourceLang !== undefined) this.sourceLang = config.sourceLang;
     if (config.customPrompt !== undefined) this.customPrompt = config.customPrompt;
     if (config.safeMask !== undefined) this.safeMask = config.safeMask;
-    if (config.reader_mode !== undefined) this.readerMode = config.reader_mode;
   }
 
   /**
@@ -422,12 +410,10 @@ export class PrefetchScheduler {
         provider: this.provider,
         translator: this.translator,
         model: this.model,
-        sourceLang: this.sourceLang,
         chapterUrl: this.manifest?.chapter_url,
         forceRefresh: Boolean(task.forceRefresh),
         custom_prompt: this.customPrompt || undefined,
         safe_mask: this.safeMask !== undefined ? this.safeMask : undefined,
-        reader_mode: this.readerMode,
         priority: task.priority,
       },
     };

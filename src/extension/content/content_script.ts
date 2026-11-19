@@ -57,12 +57,10 @@ export interface ContentScriptConfig {
   provider?: string;
   translator?: string;
   model?: string;
-  sourceLang?: string;
   prefetchEnabled?: boolean;
   prefetchDepth?: PrefetchDepth;
   customPrompt?: string;
   safeMask?: boolean;
-  readerMode?: 'manga' | 'text';
 }
 
 let activeConfig: ContentScriptConfig = {
@@ -75,7 +73,6 @@ let activeConfig: ContentScriptConfig = {
   prefetchEnabled: true,
   prefetchDepth: 3,
   safeMask: true,
-  readerMode: 'manga',
 };
 
 let activeScheduler: PrefetchScheduler | null = null;
@@ -539,14 +536,11 @@ export async function loadConfigFromStorage(): Promise<ContentScriptConfig> {
         'translator',
         'model',
         'selected_models',
-        'sourceLang',
         'prefetchEnabled',
         'prefetchDepth',
         'customPrompt',
         'custom_prompt',
         'safe_mask',
-        'reader_mode',
-        'readerMode',
       ]);
       if (stored) {
         if (typeof stored.prefetchEnabled === 'boolean') {
@@ -614,9 +608,6 @@ export async function loadConfigFromStorage(): Promise<ContentScriptConfig> {
             activeConfig.model = selectedMap[activeProvider];
           }
         }
-        if (typeof stored.sourceLang === 'string') {
-          activeConfig.sourceLang = stored.sourceLang;
-        }
         if (typeof stored.customPrompt === 'string') {
           activeConfig.customPrompt = stored.customPrompt;
         } else if (typeof stored.custom_prompt === 'string') {
@@ -627,21 +618,14 @@ export async function loadConfigFromStorage(): Promise<ContentScriptConfig> {
         } else {
           activeConfig.safeMask = true;
         }
-        if (stored.reader_mode === 'text' || stored.readerMode === 'text') {
-          activeConfig.readerMode = 'text';
-        } else if (stored.reader_mode === 'manga' || stored.readerMode === 'manga') {
-          activeConfig.readerMode = 'manga';
-        }
         if (activeScheduler) {
           activeScheduler.setConfig({
             engine: activeConfig.engine,
             provider: activeConfig.provider,
             translator: activeConfig.translator,
             model: activeConfig.model,
-            sourceLang: activeConfig.sourceLang,
             customPrompt: activeConfig.customPrompt,
             safeMask: activeConfig.safeMask,
-            reader_mode: activeConfig.readerMode,
           });
         }
       }
@@ -891,12 +875,10 @@ export async function translateImageElement(
         provider: activeConfig.provider,
         translator: activeConfig.translator,
         model: activeConfig.model,
-        sourceLang: activeConfig.sourceLang,
         chapterUrl: typeof window !== 'undefined' ? window.location.href : undefined,
         forceRefresh: forceRefresh || undefined,
         custom_prompt: activeConfig.customPrompt || undefined,
         safe_mask: activeConfig.safeMask !== undefined ? activeConfig.safeMask : undefined,
-        reader_mode: activeConfig.readerMode,
         priority: 'P0',
       },
     };
@@ -1381,10 +1363,8 @@ export async function runReaderOrchestration(forceRefresh: boolean = false): Pro
             provider: activeConfig.provider,
             translator: activeConfig.translator,
             model: activeConfig.model,
-            sourceLang: activeConfig.sourceLang,
             customPrompt: activeConfig.customPrompt,
             safeMask: activeConfig.safeMask,
-            reader_mode: activeConfig.readerMode,
             onPageReady: (pageNum, res, imageUrl, taskChapterId) => {
               // Zero-Poisoning Policy: NEVER persist fallback or empty block responses from prefetch
               if (res && !res.is_fallback && res.blocks && res.blocks.length > 0) {
@@ -1460,10 +1440,8 @@ export async function runReaderOrchestration(forceRefresh: boolean = false): Pro
             provider: activeConfig.provider,
             translator: activeConfig.translator,
             model: activeConfig.model,
-            sourceLang: activeConfig.sourceLang,
             customPrompt: activeConfig.customPrompt,
             safeMask: activeConfig.safeMask,
-            reader_mode: activeConfig.readerMode,
           });
         }
         activeScheduler.setChapterManifest(manifest, initialPage);
@@ -1643,12 +1621,9 @@ export async function initContentScript(): Promise<void> {
               changes.provider !== undefined ||
               changes.model !== undefined ||
               changes.selected_models !== undefined ||
-              changes.sourceLang !== undefined ||
               changes.customPrompt !== undefined ||
               changes.custom_prompt !== undefined ||
-              changes.safe_mask !== undefined ||
-              changes.reader_mode !== undefined ||
-              changes.readerMode !== undefined;
+              changes.safe_mask !== undefined;
 
             if (executionConfigChanged) {
               logger.info('Translation execution configuration changed in storage. Invalidating cache and re-scanning.');

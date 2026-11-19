@@ -91,7 +91,6 @@ export async function loadSettings(): Promise<void> {
       'model',
       'selected_models',
       'filterVisionOnly',
-      'sourceLang',
       'opacity',
       'overlayOpacity',
       'overlayColor',
@@ -102,12 +101,7 @@ export async function loadSettings(): Promise<void> {
       'prefetchDepth',
       'mascotEnabled',
       'custom_prompt',
-      'reader_mode',
-      'readerMode',
     ]);
-
-    const readerModeVal = stored.reader_mode === 'text' || stored.readerMode === 'text' ? 'text' : 'manga';
-    updateReaderModeToggleUI(readerModeVal);
 
     const engineSelect = document.getElementById('engine-select') as HTMLSelectElement | null;
     if (engineSelect && stored.engine) {
@@ -178,13 +172,6 @@ export async function loadSettings(): Promise<void> {
     }
 
     updateConditionalVisibility(engineSelect?.value || 'auto');
-
-    const sourceLangSelect = document.getElementById(
-      'source-lang-select'
-    ) as HTMLSelectElement | null;
-    if (sourceLangSelect && stored.sourceLang) {
-      sourceLangSelect.value = String(stored.sourceLang);
-    }
 
     const visibilityToggle = document.getElementById(
       'overlay-visibility-toggle'
@@ -317,7 +304,6 @@ export function getActiveProvider(): string {
 export function updateConditionalVisibility(engine: string): void {
   const providerContainer = document.getElementById('provider-container');
   const translatorContainer = document.getElementById('translator-container');
-  const sourceLangContainer = document.getElementById('source-lang-container');
   const modelContainer = document.getElementById('model-container');
   const translatorSelect = document.getElementById('translator-select') as HTMLSelectElement | null;
 
@@ -334,14 +320,6 @@ export function updateConditionalVisibility(engine: string): void {
       translatorContainer.classList.remove('hidden');
     } else {
       translatorContainer.classList.add('hidden');
-    }
-  }
-
-  if (sourceLangContainer) {
-    if (engine === 'cloud') {
-      sourceLangContainer.classList.add('hidden');
-    } else {
-      sourceLangContainer.classList.remove('hidden');
     }
   }
 
@@ -684,35 +662,6 @@ export async function saveSetting(key: string, value: unknown): Promise<void> {
   }
 
   await chrome.storage.local.set({ [key]: value });
-}
-
-/**
- * Updates UI state of reader mode segmented toggle.
- */
-export function updateReaderModeToggleUI(mode: 'manga' | 'text'): void {
-  const toggle = document.getElementById('reader-mode-toggle');
-  if (toggle) {
-    const buttons = toggle.querySelectorAll<HTMLButtonElement>('.segment-btn');
-    buttons.forEach((btn) => {
-      const btnMode = btn.getAttribute('data-mode');
-      const isActive = btnMode === mode;
-      btn.classList.toggle('active', isActive);
-      btn.setAttribute('aria-checked', String(isActive));
-    });
-  }
-}
-
-/**
- * Changes reader mode ('manga' vs 'text'), persists to storage, and requests page rescan.
- */
-export async function setReaderMode(mode: 'manga' | 'text'): Promise<void> {
-  updateReaderModeToggleUI(mode);
-  await saveSetting('reader_mode', mode);
-  try {
-    await triggerRescan();
-  } catch {
-    // Rescan is secondary
-  }
 }
 
 /**
@@ -1371,20 +1320,6 @@ export async function initPopup(): Promise<void> {
     }
   }
 
-  // Bind reader layout mode toggle
-  const readerModeToggle = document.getElementById('reader-mode-toggle');
-  if (readerModeToggle) {
-    const buttons = readerModeToggle.querySelectorAll<HTMLButtonElement>('.segment-btn');
-    buttons.forEach((btn) => {
-      btn.addEventListener('click', () => {
-        const mode = btn.getAttribute('data-mode');
-        if (mode === 'manga' || mode === 'text') {
-          setReaderMode(mode).catch(() => {});
-        }
-      });
-    });
-  }
-
   // Bind engine selector
   const engineSelect = document.getElementById('engine-select') as HTMLSelectElement | null;
   if (engineSelect) {
@@ -1621,16 +1556,6 @@ export async function initPopup(): Promise<void> {
       const endpointVal = customEndpointInput.value.trim();
       const ok = await saveProviderCredential('custom', keyVal, endpointVal || undefined);
       if (ok) customKeyInput.value = '';
-    });
-  }
-
-  // Bind source language selector
-  const sourceLangSelect = document.getElementById(
-    'source-lang-select'
-  ) as HTMLSelectElement | null;
-  if (sourceLangSelect) {
-    sourceLangSelect.addEventListener('change', () => {
-      saveSetting('sourceLang', sourceLangSelect.value).catch(() => {});
     });
   }
 
