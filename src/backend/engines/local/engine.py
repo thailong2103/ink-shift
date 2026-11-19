@@ -188,6 +188,8 @@ class LocalTranslationEngine(BaseTranslationEngine):
                 image_height=height,
                 chapter_id=chapter_id,
                 requested_model=ocr_mode,
+                panel_boxes=[p.box_2d for p in effective_layout.panels],
+                orphan_boxes=[t.box_2d for t in effective_layout.orphan_texts],
             )
             non_empty_bubbles = sum(1 for t in hybrid_result.bubble_texts if t.strip())
             non_empty_residuals = sum(1 for c in hybrid_result.residual_clusters if c.text.strip())

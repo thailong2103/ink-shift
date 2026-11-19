@@ -228,3 +228,120 @@ def test_cluster_lines_bidirectional_mixed_vertical_and_horizontal() -> None:
     assert len(horiz) == 1
     assert vert[0].text == "今日はいい天気"
     assert horiz[0].text == "Editor note line 1 Editor note line 2"
+
+
+# ---------------------------------------------------------------------------
+# Phase 47 / Option A: 2D Spatial Clustering & Panel/Bubble Barrier Tests
+# ---------------------------------------------------------------------------
+
+
+def test_cluster_vertical_does_not_bridge_distant_same_column_across_panels() -> None:
+    """Vertically distant boxes in the same X column across panels must stay separate."""
+    from src.backend.engines.local.ocr.text_assembler import cluster_lines_bidirectional
+
+    raw_lines = [
+        [[[110.0, 132.0], [150.0, 132.0], [150.0, 230.0], [110.0, 230.0]], "上のコマ", 0.92],
+        [[[112.0, 598.0], [152.0, 598.0], [152.0, 707.0], [112.0, 707.0]], "中のコマ", 0.90],
+        [[[108.0, 915.0], [148.0, 915.0], [148.0, 999.0], [108.0, 999.0]], "下のコマ", 0.91],
+    ]
+    clusters = cluster_lines_bidirectional(raw_lines, image_width=1000, image_height=1000)
+
+    assert len(clusters) == 3
+    assert all((c.box_2d[2] - c.box_2d[0]) < 200 for c in clusters)
+
+
+def test_cluster_horizontal_does_not_bridge_distant_same_row() -> None:
+    """Horizontally distant boxes sharing the same Y band must not merge into one bar."""
+    from src.backend.engines.local.ocr.text_assembler import cluster_lines_bidirectional
+
+    raw_lines = [
+        [[[50.0, 200.0], [250.0, 200.0], [250.0, 225.0], [50.0, 225.0]], "Left panel text", 0.95],
+        [[[600.0, 200.0], [850.0, 200.0], [850.0, 225.0], [600.0, 225.0]], "Right panel text", 0.96],
+    ]
+    clusters = cluster_lines_bidirectional(raw_lines, image_width=1000, image_height=1000)
+
+    assert len(clusters) == 2
+    assert {c.text for c in clusters} == {"Left panel text", "Right panel text"}
+
+
+def test_cluster_vertical_merges_same_column_split_by_small_gap() -> None:
+    """Split segments stacked inside the same vertical column must merge cleanly."""
+    from src.backend.engines.local.ocr.text_assembler import cluster_lines_bidirectional
+
+    raw_lines = [
+        [[[200.0, 100.0], [235.0, 100.0], [235.0, 220.0], [200.0, 220.0]], "上から", 0.97],
+        [[[202.0, 240.0], [235.0, 240.0], [235.0, 340.0], [202.0, 340.0]], "下に", 0.96],
+    ]
+    clusters = cluster_lines_bidirectional(raw_lines, image_width=1000, image_height=1000)
+
+    assert len(clusters) == 1
+    assert clusters[0].direction == "vertical"
+    assert clusters[0].text == "上から下に"
+    assert clusters[0].box_2d == (100, 200, 340, 235)
+
+
+def test_cluster_respects_panel_barrier_including_inset_panel() -> None:
+    """Adjacent columns separated by a panel or inset-panel boundary must never merge."""
+    from src.backend.engines.local.ocr.text_assembler import cluster_lines_bidirectional
+
+    # Adjacent side-by-side panels
+    split_lines = [
+        [[[460.0, 100.0], [490.0, 100.0], [490.0, 300.0], [460.0, 300.0]], "左枠の文字", 0.95],
+        [[[510.0, 100.0], [540.0, 100.0], [540.0, 300.0], [510.0, 300.0]], "右枠の文字", 0.95],
+    ]
+    split_panels = [(0, 0, 500, 495), (0, 505, 500, 1000)]
+    split_clusters = cluster_lines_bidirectional(
+        split_lines,
+        image_width=1000,
+        image_height=1000,
+        panel_boxes=split_panels,
+    )
+    assert len(split_clusters) == 2
+
+    # Inset panel nested inside outer panel
+    inset_lines = [
+        [[[550.0, 250.0], [585.0, 250.0], [585.0, 450.0], [550.0, 450.0]], "内枠", 0.94],
+        [[[610.0, 250.0], [645.0, 250.0], [645.0, 450.0], [610.0, 450.0]], "外枠", 0.94],
+    ]
+    inset_panels = [(0, 0, 900, 900), (200, 200, 600, 600)]
+    inset_clusters = cluster_lines_bidirectional(
+        inset_lines,
+        image_width=1000,
+        image_height=1000,
+        panel_boxes=inset_panels,
+    )
+    assert len(inset_clusters) == 2
+
+
+def test_cluster_respects_bubble_barrier_and_filters_bubble_overlap() -> None:
+    """Merge is blocked when union overlaps a speech bubble (>25%), and overlapping residuals (>30%) drop."""
+    from src.backend.engines.local.ocr.text_assembler import cluster_lines_bidirectional
+
+    bubble_boxes = [(140, 200, 280, 240)]
+    flanking_lines = [
+        [[[150.0, 120.0], [195.0, 120.0], [195.0, 300.0], [150.0, 300.0]], "左側の文", 0.95],
+        [[[245.0, 120.0], [290.0, 120.0], [290.0, 300.0], [245.0, 300.0]], "右側の文", 0.95],
+    ]
+    clusters = cluster_lines_bidirectional(
+        flanking_lines,
+        image_width=1000,
+        image_height=1000,
+        panel_boxes=[(0, 0, 1000, 1000)],
+        bubble_boxes=bubble_boxes,
+    )
+    assert len(clusters) == 2
+
+    # Standalone residual box inside/overlapping >30% of the speech bubble must be dropped
+    overlapping_lines = [
+        *flanking_lines,
+        [[[202.0, 150.0], [238.0, 150.0], [238.0, 270.0], [202.0, 270.0]], "重複残余", 0.95],
+    ]
+    filtered_clusters = cluster_lines_bidirectional(
+        overlapping_lines,
+        image_width=1000,
+        image_height=1000,
+        panel_boxes=[(0, 0, 1000, 1000)],
+        bubble_boxes=bubble_boxes,
+    )
+    assert len(filtered_clusters) == 2
+    assert {c.text for c in filtered_clusters} == {"右側の文", "左側の文"}

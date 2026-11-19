@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import math
 import re
 import statistics
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -326,49 +327,222 @@ def _build_cluster(
     )
 
 
+def _entry_to_box_1000(
+    entry: dict[str, Any],
+    w_safe: int,
+    h_safe: int,
+) -> tuple[float, float, float, float]:
+    """Convert a geometry entry from physical pixel coordinates to [0, 1000] bounds."""
+    ymin = max(0.0, min(1000.0, (float(entry["ymin"]) / float(h_safe)) * 1000.0))
+    xmin = max(0.0, min(1000.0, (float(entry["xmin"]) / float(w_safe)) * 1000.0))
+    ymax = max(0.0, min(1000.0, (float(entry["ymax"]) / float(h_safe)) * 1000.0))
+    xmax = max(0.0, min(1000.0, (float(entry["xmax"]) / float(w_safe)) * 1000.0))
+    return (ymin, xmin, ymax, xmax)
+
+
+def _box_intersection_area(
+    a: tuple[float, float, float, float],
+    b: tuple[float, float, float, float],
+) -> float:
+    """Compute intersection area between two (ymin, xmin, ymax, xmax) boxes."""
+    inter_h = max(0.0, min(a[2], b[2]) - max(a[0], b[0]))
+    inter_w = max(0.0, min(a[3], b[3]) - max(a[1], b[1]))
+    return inter_h * inter_w
+
+
+def _assign_panel_index(
+    box_1000: tuple[float, float, float, float],
+    panel_boxes: Sequence[tuple[int, int, int, int]],
+) -> int:
+    """Assign entry to its enclosing panel index, picking smallest panel for nested insets."""
+    if not panel_boxes:
+        return -1
+    cx = (box_1000[1] + box_1000[3]) / 2.0
+    cy = (box_1000[0] + box_1000[2]) / 2.0
+    best_idx = -1
+    best_area = float("inf")
+    for idx, (p_ymin, p_xmin, p_ymax, p_xmax) in enumerate(panel_boxes):
+        if float(p_ymin) <= cy <= float(p_ymax) and float(p_xmin) <= cx <= float(p_xmax):
+            area = float(max(1, p_ymax - p_ymin) * max(1, p_xmax - p_xmin))
+            if area < best_area:
+                best_area = area
+                best_idx = idx
+    return best_idx
+
+
+def _overlaps_any_bubble(
+    box_1000: tuple[float, float, float, float],
+    bubble_boxes: Sequence[tuple[int, int, int, int]],
+    threshold: float,
+) -> bool:
+    """Return True when intersection-over-min-area with any speech bubble exceeds threshold."""
+    box_area = max(1.0, (box_1000[2] - box_1000[0]) * (box_1000[3] - box_1000[1]))
+    for b_ymin, b_xmin, b_ymax, b_xmax in bubble_boxes:
+        b_box = (float(b_ymin), float(b_xmin), float(b_ymax), float(b_xmax))
+        inter = _box_intersection_area(box_1000, b_box)
+        if inter <= 0.0:
+            continue
+        bubble_area = max(1.0, (b_box[2] - b_box[0]) * (b_box[3] - b_box[1]))
+        min_area = max(1.0, min(box_area, bubble_area))
+        if (inter / min_area) > threshold:
+            return True
+    return False
+
+
+def _can_merge_vertical(
+    a: dict[str, Any],
+    b: dict[str, Any],
+    col_width_factor: float = 1.35,
+) -> bool:
+    """Return True if two vertical entries belong to the same column or adjacent columns."""
+    a_w, b_w = float(a["w"]), float(b["w"])
+    a_h, b_h = float(a["h"]), float(b["h"])
+    w_avg = (a_w + b_w) / 2.0
+    w_min = max(1.0, min(a_w, b_w))
+    h_min = max(1.0, min(a_h, b_h))
+    if max(a_w, b_w) > 2.8 * w_min:
+        return False
+
+    gap_x = max(0.0, max(float(a["xmin"]), float(b["xmin"])) - min(float(a["xmax"]), float(b["xmax"])))
+    overlap_x = max(0.0, min(float(a["xmax"]), float(b["xmax"])) - max(float(a["xmin"]), float(b["xmin"])))
+    gap_y = max(0.0, max(float(a["ymin"]), float(b["ymin"])) - min(float(a["ymax"]), float(b["ymax"])))
+    overlap_y = max(0.0, min(float(a["ymax"]), float(b["ymax"])) - max(float(a["ymin"]), float(b["ymin"])))
+
+    adjacent_cols = gap_x <= w_avg * col_width_factor and overlap_y >= 0.15 * h_min
+    same_col_split = overlap_x >= 0.35 * w_min and gap_y <= 1.2 * w_avg
+    return adjacent_cols or same_col_split
+
+
+def _can_merge_horizontal(
+    a: dict[str, Any],
+    b: dict[str, Any],
+    line_height_factor: float = 1.25,
+) -> bool:
+    """Return True if two horizontal entries are stacked lines or split segments on one row."""
+    a_w, b_w = float(a["w"]), float(b["w"])
+    a_h, b_h = float(a["h"]), float(b["h"])
+    h_avg = (a_h + b_h) / 2.0
+    h_min = max(1.0, min(a_h, b_h))
+    w_min = max(1.0, min(a_w, b_w))
+    if max(a_h, b_h) > 2.8 * h_min:
+        return False
+
+    gap_y = max(0.0, max(float(a["ymin"]), float(b["ymin"])) - min(float(a["ymax"]), float(b["ymax"])))
+    overlap_y = max(0.0, min(float(a["ymax"]), float(b["ymax"])) - max(float(a["ymin"]), float(b["ymin"])))
+    gap_x = max(0.0, max(float(a["xmin"]), float(b["xmin"])) - min(float(a["xmax"]), float(b["xmax"])))
+    overlap_x = max(0.0, min(float(a["xmax"]), float(b["xmax"])) - max(float(a["xmin"]), float(b["xmin"])))
+
+    stacked_lines = gap_y <= h_avg * line_height_factor and overlap_x >= 0.15 * w_min
+    same_row_split = overlap_y >= 0.40 * h_min and gap_x <= 1.5 * h_avg
+    return stacked_lines or same_row_split
+
+
+def _union_find_cluster_entries(
+    entries: list[dict[str, Any]],
+    can_merge: Callable[[dict[str, Any], dict[str, Any]], bool],
+    image_width: int,
+    image_height: int,
+    panel_boxes: Sequence[tuple[int, int, int, int]] = (),
+    bubble_boxes: Sequence[tuple[int, int, int, int]] = (),
+    bubble_merge_threshold: float = 0.25,
+) -> list[list[dict[str, Any]]]:
+    """Group entries using distance-ordered 2D Union-Find while respecting panel/bubble barriers."""
+    n = len(entries)
+    if n == 0:
+        return []
+
+    w_safe = max(1, image_width)
+    h_safe = max(1, image_height)
+    boxes_1000 = [_entry_to_box_1000(entry, w_safe, h_safe) for entry in entries]
+    panel_ids = [_assign_panel_index(box, panel_boxes) for box in boxes_1000]
+
+    edges: list[tuple[float, int, int]] = []
+    for i in range(n):
+        ei = entries[i]
+        for j in range(i + 1, n):
+            if panel_ids[i] != panel_ids[j]:
+                continue
+            ej = entries[j]
+            if not can_merge(ei, ej):
+                continue
+            gx = max(
+                0.0,
+                max(float(ei["xmin"]), float(ej["xmin"])) - min(float(ei["xmax"]), float(ej["xmax"])),
+            )
+            gy = max(
+                0.0,
+                max(float(ei["ymin"]), float(ej["ymin"])) - min(float(ei["ymax"]), float(ej["ymax"])),
+            )
+            edges.append((math.hypot(gx, gy), i, j))
+
+    edges.sort(key=lambda edge: (edge[0], edge[1], edge[2]))
+
+    parent = list(range(n))
+    comp_bounds = list(boxes_1000)
+
+    def find_root(node: int) -> int:
+        while parent[node] != node:
+            parent[node] = parent[parent[node]]
+            node = parent[node]
+        return node
+
+    for _dist, i, j in edges:
+        ri = find_root(i)
+        rj = find_root(j)
+        if ri == rj:
+            continue
+        bi = comp_bounds[ri]
+        bj = comp_bounds[rj]
+        candidate_box = (
+            min(bi[0], bj[0]),
+            min(bi[1], bj[1]),
+            max(bi[2], bj[2]),
+            max(bi[3], bj[3]),
+        )
+        if bubble_boxes and _overlaps_any_bubble(candidate_box, bubble_boxes, bubble_merge_threshold):
+            continue
+        new_root, old_root = (ri, rj) if ri < rj else (rj, ri)
+        parent[old_root] = new_root
+        comp_bounds[new_root] = candidate_box
+
+    grouped: dict[int, list[dict[str, Any]]] = {}
+    for idx, entry in enumerate(entries):
+        root = find_root(idx)
+        grouped.setdefault(root, []).append(entry)
+    return list(grouped.values())
+
+
 def _cluster_horizontal_entries(
     lines: list[dict[str, Any]],
     image_width: int,
     image_height: int,
     line_height_factor: float = 1.25,
     force_cjk_clean: bool = False,
+    panel_boxes: Sequence[tuple[int, int, int, int]] = (),
+    bubble_boxes: Sequence[tuple[int, int, int, int]] = (),
 ) -> list[ParagraphCluster]:
-    """Cluster horizontal lines using vertical gap and horizontal overlap (Top-to-Bottom, LTR)."""
+    """Cluster horizontal lines using 2D connected components and panel/bubble barriers."""
     if not lines:
         return []
 
     sorted_lines = sorted(lines, key=lambda item: (float(item["ymin"]), float(item["xmin"])))
-    clusters: list[list[dict[str, Any]]] = []
-    current_cluster: list[dict[str, Any]] = []
-
-    for line in sorted_lines:
-        if not current_cluster:
-            current_cluster.append(line)
-            continue
-
-        prev_line = current_cluster[-1]
-        gap_y = float(line["ymin"]) - float(prev_line["ymax"])
-        avg_h = (float(prev_line["h"]) + float(line["h"])) / 2.0
-
-        cluster_xmin = min(float(item["xmin"]) for item in current_cluster)
-        cluster_xmax = max(float(item["xmax"]) for item in current_cluster)
-        overlap_x = max(0.0, min(float(line["xmax"]), cluster_xmax) - max(float(line["xmin"]), cluster_xmin))
-
-        if gap_y <= avg_h * line_height_factor and (overlap_x > 0.0 or gap_y <= 0.4 * avg_h):
-            current_cluster.append(line)
-        else:
-            clusters.append(current_cluster)
-            current_cluster = [line]
-
-    if current_cluster:
-        clusters.append(current_cluster)
+    clusters = _union_find_cluster_entries(
+        sorted_lines,
+        can_merge=lambda a, b: _can_merge_horizontal(a, b, line_height_factor=line_height_factor),
+        image_width=image_width,
+        image_height=image_height,
+        panel_boxes=panel_boxes,
+        bubble_boxes=bubble_boxes,
+    )
 
     w_safe = max(1, image_width)
     h_safe = max(1, image_height)
-    return [
+    built = [
         _build_cluster(cluster, w_safe, h_safe, "horizontal", force_cjk_clean=force_cjk_clean)
         for cluster in clusters
     ]
+    built.sort(key=lambda c: (c.box_2d[0], c.box_2d[1]))
+    return built
 
 
 def _cluster_vertical_entries(
@@ -376,6 +550,8 @@ def _cluster_vertical_entries(
     image_width: int,
     image_height: int,
     col_width_factor: float = 1.35,
+    panel_boxes: Sequence[tuple[int, int, int, int]] = (),
+    bubble_boxes: Sequence[tuple[int, int, int, int]] = (),
 ) -> list[ParagraphCluster]:
     """Filter Furigana and cluster vertical text columns Right-to-Left into coherent blocks."""
     if not lines:
@@ -383,35 +559,20 @@ def _cluster_vertical_entries(
 
     filtered = filter_furigana_boxes(lines)
     sorted_lines = sorted(filtered, key=lambda item: (-float(item["xmax"]), float(item["ymin"])))
-    clusters: list[list[dict[str, Any]]] = []
-    current_cluster: list[dict[str, Any]] = []
-
-    for line in sorted_lines:
-        if not current_cluster:
-            current_cluster.append(line)
-            continue
-
-        cluster_xmin = min(float(item["xmin"]) for item in current_cluster)
-        cluster_ymin = min(float(item["ymin"]) for item in current_cluster)
-        cluster_ymax = max(float(item["ymax"]) for item in current_cluster)
-        avg_w = sum(float(item["w"]) for item in current_cluster) / float(len(current_cluster))
-        avg_w = (avg_w + float(line["w"])) / 2.0
-
-        gap_x = cluster_xmin - float(line["xmax"])
-        overlap_y = max(0.0, min(float(line["ymax"]), cluster_ymax) - max(float(line["ymin"]), cluster_ymin))
-
-        if gap_x <= avg_w * col_width_factor and (overlap_y > 0.0 or gap_x <= 0.4 * avg_w):
-            current_cluster.append(line)
-        else:
-            clusters.append(current_cluster)
-            current_cluster = [line]
-
-    if current_cluster:
-        clusters.append(current_cluster)
+    clusters = _union_find_cluster_entries(
+        sorted_lines,
+        can_merge=lambda a, b: _can_merge_vertical(a, b, col_width_factor=col_width_factor),
+        image_width=image_width,
+        image_height=image_height,
+        panel_boxes=panel_boxes,
+        bubble_boxes=bubble_boxes,
+    )
 
     w_safe = max(1, image_width)
     h_safe = max(1, image_height)
-    return [_build_cluster(cluster, w_safe, h_safe, "vertical") for cluster in clusters]
+    built = [_build_cluster(cluster, w_safe, h_safe, "vertical") for cluster in clusters]
+    built.sort(key=lambda c: (-c.box_2d[3], c.box_2d[0]))
+    return built
 
 
 def cluster_lines_to_paragraphs(
@@ -449,8 +610,10 @@ def cluster_lines_bidirectional(
     image_height: int,
     line_height_factor: float = 1.25,
     col_width_factor: float = 1.35,
+    panel_boxes: Sequence[tuple[int, int, int, int]] = (),
+    bubble_boxes: Sequence[tuple[int, int, int, int]] = (),
 ) -> list[ParagraphCluster]:
-    """Cluster raw OCR detections supporting mixed vertical (RTL) and horizontal (LTR) blocks on the same page."""
+    """Cluster raw OCR detections supporting mixed vertical (RTL) and horizontal (LTR) blocks cleanly."""
     parsed = _parse_raw_ocr_lines(raw_ocr_lines)
     if not parsed:
         return []
@@ -459,16 +622,33 @@ def cluster_lines_bidirectional(
     h_entries = [b for b in parsed if b["orientation"] == "horizontal"]
     s_entries = [b for b in parsed if b["orientation"] == "square"]
 
+    w_safe = max(1, image_width)
+    h_safe = max(1, image_height)
     default_dir: Literal["horizontal", "vertical"] = (
         "vertical" if len(v_entries) > len(h_entries) else "horizontal"
     )
     non_square = v_entries + h_entries
+    non_square_panels = (
+        [_assign_panel_index(_entry_to_box_1000(nb, w_safe, h_safe), panel_boxes) for nb in non_square]
+        if panel_boxes
+        else [-1 for _ in non_square]
+    )
     for sq in s_entries:
         assigned = default_dir
-        if non_square:
+        sq_panel = (
+            _assign_panel_index(_entry_to_box_1000(sq, w_safe, h_safe), panel_boxes)
+            if panel_boxes
+            else -1
+        )
+        candidates = (
+            [nb for nb, nb_panel in zip(non_square, non_square_panels) if nb_panel == sq_panel]
+            if panel_boxes
+            else non_square
+        )
+        if candidates:
             search_radius = 3.0 * max(float(sq["w"]), float(sq["h"]))
             nearest = min(
-                non_square,
+                candidates,
                 key=lambda nb: ((float(nb["cx"]) - float(sq["cx"])) ** 2 + (float(nb["cy"]) - float(sq["cy"])) ** 2)
                 ** 0.5,
             )
@@ -485,15 +665,35 @@ def cluster_lines_bidirectional(
         image_width=image_width,
         image_height=image_height,
         col_width_factor=col_width_factor,
+        panel_boxes=panel_boxes,
+        bubble_boxes=bubble_boxes,
     )
     horizontal_clusters = _cluster_horizontal_entries(
         h_entries,
         image_width=image_width,
         image_height=image_height,
         line_height_factor=line_height_factor,
+        panel_boxes=panel_boxes,
+        bubble_boxes=bubble_boxes,
     )
 
-    return [*vertical_clusters, *horizontal_clusters]
+    combined = [*vertical_clusters, *horizontal_clusters]
+    if bubble_boxes:
+        combined = [
+            cluster
+            for cluster in combined
+            if not _overlaps_any_bubble(
+                (
+                    float(cluster.box_2d[0]),
+                    float(cluster.box_2d[1]),
+                    float(cluster.box_2d[2]),
+                    float(cluster.box_2d[3]),
+                ),
+                bubble_boxes,
+                threshold=0.30,
+            )
+        ]
+    return combined
 
 
 def assemble_comic_lines(raw_lines: list[str]) -> str:

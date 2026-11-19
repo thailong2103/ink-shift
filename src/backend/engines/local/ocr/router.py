@@ -54,6 +54,7 @@ class OCRRouter:
     HANGUL_SCRIPT_REGEX: ClassVar[re.Pattern[str]] = re.compile(
         r"[\uAC00-\uD7AF\u1100-\u11FF\u3130-\u318F]"
     )
+    _NON_WORD_PATTERN: ClassVar[re.Pattern[str]] = re.compile(r"[\s\W_]+", re.UNICODE)
 
     def __init__(
         self,
@@ -350,20 +351,57 @@ class OCRRouter:
         return ymin, xmin, ymax, xmax, (xmin + xmax) / 2.0, (ymin + ymax) / 2.0
 
     @staticmethod
+    def _overlaps_any_box_iomin(
+        box_1000: tuple[float, float, float, float],
+        target_boxes: Sequence[tuple[int, int, int, int]],
+        threshold: float = 0.40,
+    ) -> bool:
+        """Return True if intersection over smaller box area meets threshold for any target box."""
+        q_ymin, q_xmin, q_ymax, q_xmax = box_1000
+        q_area = max(1.0, (q_ymax - q_ymin) * (q_xmax - q_xmin))
+        for t_ymin, t_xmin, t_ymax, t_xmax in target_boxes:
+            inter_w = max(0.0, min(q_xmax, float(t_xmax)) - max(q_xmin, float(t_xmin)))
+            inter_h = max(0.0, min(q_ymax, float(t_ymax)) - max(q_ymin, float(t_ymin)))
+            inter_area = inter_w * inter_h
+            if inter_area <= 0.0:
+                continue
+            t_area = max(1.0, float(t_ymax - t_ymin) * float(t_xmax - t_xmin))
+            if inter_area / min(q_area, t_area) >= threshold:
+                return True
+        return False
+
+    @classmethod
     def _overlaps_sfx(
+        cls,
         box_1000: tuple[float, float, float, float],
         sfx_boxes: Sequence[tuple[int, int, int, int]],
         threshold: float = 0.40,
     ) -> bool:
-        """Return True if intersection-over-quad-area exceeds threshold for any SFX box."""
-        q_ymin, q_xmin, q_ymax, q_xmax = box_1000
-        q_area = max(1.0, (q_ymax - q_ymin) * (q_xmax - q_xmin))
-        for s_ymin, s_xmin, s_ymax, s_xmax in sfx_boxes:
-            inter_w = max(0.0, min(q_xmax, float(s_xmax)) - max(q_xmin, float(s_xmin)))
-            inter_h = max(0.0, min(q_ymax, float(s_ymax)) - max(q_ymin, float(s_ymin)))
-            if (inter_w * inter_h) / q_area >= threshold:
-                return True
-        return False
+        """Return True if IoMin with any YOLO SFX box exceeds threshold."""
+        return cls._overlaps_any_box_iomin(box_1000, sfx_boxes, threshold=threshold)
+
+    @classmethod
+    def _is_residual_noise_cluster(
+        cls,
+        cluster: ParagraphCluster,
+        has_bubbles: bool,
+    ) -> bool:
+        """Filter residual non-text noise clusters according to manga vs pure-prose context."""
+        meaningful = cls._NON_WORD_PATTERN.sub("", cluster.text)
+        if not meaningful:
+            return True
+        if not has_bubbles:
+            return cluster.confidence < 0.40
+        if cluster.confidence < 0.50:
+            return True
+        if len(meaningful) == 1:
+            return meaningful.isascii() or cluster.confidence < 0.85
+        return (
+            len(meaningful) <= 4
+            and meaningful.isascii()
+            and " " not in cluster.text.strip()
+            and cluster.confidence < 0.80
+        )
 
     def _should_retry_korean(
         self,
@@ -427,6 +465,8 @@ class OCRRouter:
         image_height: int,
         chapter_id: str | None = None,
         requested_model: str | None = None,
+        panel_boxes: Sequence[tuple[int, int, int, int]] = (),
+        orphan_boxes: Sequence[tuple[int, int, int, int]] = (),
     ) -> HybridOCRResult:
         """Execute unified hybrid full-page OCR: spatial bubble fusion + non-SFX prose clustering."""
         rapid_split_capable = isinstance(self._rapid_ocr, RapidOCRAdapter) and self._rapid_ocr.supports_split_pipeline
@@ -516,11 +556,20 @@ class OCRRouter:
             )
 
         # 4. Run 1-pass PP-OCRv6_medium or cached Korean recognizer on reused crops
+        has_bubbles = len(work_items) > 0
         use_ko = bool(chapter_id and self._chapter_cache.get(chapter_id) == "ko")
         recognized = rapid.recognize_crops(crops_bgr, use_korean=use_ko)
         ocr_engine_used = "rapidocr-ko" if use_ko else "rapidocr"
 
-        if not use_ko and self._should_retry_korean(recognized, chapter_id):
+        ko_probe_source = (
+            [rec for (kind, _, _), rec in zip(crop_manifest, recognized) if kind == "bubble"]
+            if has_bubbles
+            else recognized
+        )
+        if not ko_probe_source:
+            ko_probe_source = recognized
+
+        if not use_ko and self._should_retry_korean(ko_probe_source, chapter_id):
             ko_recognized = rapid.recognize_crops(crops_bgr, use_korean=True)
             ko_text_joined = "\n".join(txt for txt, _ in ko_recognized if txt.strip())
             has_hangul = len(self.HANGUL_SCRIPT_REGEX.findall(ko_text_joined)) >= 1
@@ -534,7 +583,7 @@ class OCRRouter:
                     if chapter_id:
                         self._chapter_cache[chapter_id] = "ko"
 
-        # 5. Reassemble entries into bubbles vs residual list
+        # 5. Reassemble entries into bubbles vs context-filtered residual list
         bubble_entries: dict[int, list[dict[str, Any]]] = {idx: [] for idx in range(len(work_items))}
         residual_raw_lines: list[list[Any]] = []
         for (kind, b_idx, quad), (txt, conf) in zip(crop_manifest, recognized):
@@ -545,6 +594,17 @@ class OCRRouter:
                 if entry is not None:
                     bubble_entries[b_idx].append(entry)
             else:
+                q_bounds = self._quad_to_bounds_1000(quad, image_width, image_height)[:4]
+                if not has_bubbles:
+                    min_conf = 0.40
+                elif orphan_boxes and self._overlaps_any_box_iomin(
+                    q_bounds, orphan_boxes, threshold=0.35
+                ):
+                    min_conf = 0.50
+                else:
+                    min_conf = 0.55
+                if float(conf) < min_conf:
+                    continue
                 residual_raw_lines.append([quad.tolist(), txt, conf])
 
         # 6. Guard ambiguous 3x3 tight square CJK grid bubbles on vertical pages
@@ -575,11 +635,18 @@ class OCRRouter:
             )
             bubble_texts.append(text)
 
-        residual_clusters = cluster_lines_bidirectional(
+        raw_residual_clusters = cluster_lines_bidirectional(
             residual_raw_lines,
             image_width=image_width,
             image_height=image_height,
+            panel_boxes=panel_boxes,
+            bubble_boxes=boxes_canonical,
         )
+        residual_clusters = [
+            cluster
+            for cluster in raw_residual_clusters
+            if not self._is_residual_noise_cluster(cluster, has_bubbles=has_bubbles)
+        ]
 
         all_texts = [*bubble_texts, *(c.text for c in residual_clusters if c.text.strip())]
         detected_lang = self.detect_page_language(all_texts)

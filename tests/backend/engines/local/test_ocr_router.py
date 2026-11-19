@@ -666,3 +666,111 @@ async def test_recognize_hybrid_page_auto_korean_fallback_and_chapter_cache() ->
         )
         assert res2.bubble_texts == ["안녕하세요!"]
         assert rec_calls == [False, True, True]
+
+
+# ---------------------------------------------------------------------------
+# Phase 47 / Option A: IoMin SFX Exclusion & Residual Noise Guard Tests
+# ---------------------------------------------------------------------------
+
+
+def test_overlaps_sfx_iomin_catches_larger_quad_enclosing_sfx() -> None:
+    """IoMin must catch DBNet quads that fully enclose a smaller YOLO SFX box."""
+    sfx_boxes = [(934, 126, 980, 200)]
+    larger_enclosing_quad = (915.0, 94.0, 999.0, 233.0)
+    assert OCRRouter._overlaps_sfx(larger_enclosing_quad, sfx_boxes) is True
+
+
+@pytest.mark.asyncio
+async def test_recognize_hybrid_page_filters_manga_residual_noise_and_keeps_legit_narration() -> None:
+    """On bubble pages, enclosed SFX, low-conf strokes, digits, and ASCII fragments drop cleanly."""
+    from unittest.mock import patch
+
+    import numpy as np
+
+    from src.backend.engines.local.ocr.rapid_ocr import RapidOCRAdapter
+
+    adapter = RapidOCRAdapter(rapidocr_engine=None)
+    router = OCRRouter(rapid_ocr=adapter)
+
+    work_items = [make_dummy_work_item(100, 750, 260, 920)]
+    sfx_boxes = [(934, 126, 980, 200)]
+    orphan_boxes = [(300, 640, 390, 730)]
+    panel_boxes = [(0, 0, 1000, 1000)]
+
+    q_bubble = np.array([[780, 120], [890, 120], [890, 230], [780, 230]], dtype=np.float32)
+    q_sfx = np.array([[94, 915], [233, 915], [233, 999], [94, 999]], dtype=np.float32)
+    q_low_conf = np.array([[100, 300], [135, 300], [135, 420], [100, 420]], dtype=np.float32)
+    q_single_kana = np.array([[240, 300], [275, 300], [275, 380], [240, 380]], dtype=np.float32)
+    q_digit = np.array([[380, 300], [415, 300], [415, 380], [380, 380]], dtype=np.float32)
+    q_ascii_noise = np.array([[520, 300], [555, 300], [555, 420], [520, 420]], dtype=np.float32)
+    q_orphan = np.array([[660, 305], [705, 305], [705, 385], [660, 385]], dtype=np.float32)
+    q_narration = np.array([[600, 700], [920, 700], [920, 740], [600, 740]], dtype=np.float32)
+
+    all_quads = [
+        q_bubble,
+        q_sfx,
+        q_low_conf,
+        q_single_kana,
+        q_digit,
+        q_ascii_noise,
+        q_orphan,
+        q_narration,
+    ]
+    recognized = [
+        ("ふうん…なるほどね…♡", 0.98),
+        ("ややんなっ", 0.22),
+        ("す", 0.62),
+        ("8", 0.95),
+        ("NKRI", 0.68),
+        ("数時間後", 0.52),
+        ("これは地の文です。", 0.92),
+    ]
+
+    with (
+        patch.object(adapter, "detect_text_boxes", return_value=all_quads),
+        patch.object(adapter, "crop_quad", side_effect=lambda img, q: np.zeros((32, 128, 3), dtype=np.uint8)),
+        patch.object(adapter, "recognize_crops", return_value=recognized),
+    ):
+        result = await router.recognize_hybrid_page(
+            image_np=Image.new("RGB", (1000, 1000), color="white"),
+            work_items=work_items,
+            sfx_boxes=sfx_boxes,
+            panel_boxes=panel_boxes,
+            orphan_boxes=orphan_boxes,
+            image_width=1000,
+            image_height=1000,
+        )
+
+    assert result.bubble_texts == ["ふうん…なるほどね…♡"]
+    residual_texts = {c.text for c in result.residual_clusters}
+    assert residual_texts == {"数時間後", "これは地の文です。"}
+
+
+@pytest.mark.asyncio
+async def test_recognize_hybrid_page_prose_page_retains_permissive_confidence() -> None:
+    """Zero-bubble prose/novel pages keep permissive 0.40 confidence threshold."""
+    from unittest.mock import patch
+
+    import numpy as np
+
+    from src.backend.engines.local.ocr.rapid_ocr import RapidOCRAdapter
+
+    adapter = RapidOCRAdapter(rapidocr_engine=None)
+    router = OCRRouter(rapid_ocr=adapter)
+
+    q_prose = np.array([[100, 200], [650, 200], [650, 240], [100, 240]], dtype=np.float32)
+    with (
+        patch.object(adapter, "detect_text_boxes", return_value=[q_prose]),
+        patch.object(adapter, "crop_quad", side_effect=lambda img, q: np.zeros((32, 128, 3), dtype=np.uint8)),
+        patch.object(adapter, "recognize_crops", return_value=[("第一章の始まり", 0.45)]),
+    ):
+        result = await router.recognize_hybrid_page(
+            image_np=Image.new("RGB", (1000, 1000), color="white"),
+            work_items=[],
+            sfx_boxes=[],
+            image_width=1000,
+            image_height=1000,
+        )
+
+    assert len(result.residual_clusters) == 1
+    assert result.residual_clusters[0].text == "第一章の始まり"

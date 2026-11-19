@@ -901,3 +901,57 @@ async def test_local_engine_unified_hybrid_zero_bubbles_still_translates_prose()
     assert resp.blocks[0].id == "text_p_1"
     assert resp.blocks[0].polygon is None
     assert resp.blocks[0].translated_text == "dịch_这是一段自动识别的正文内容。"
+
+
+@pytest.mark.asyncio
+async def test_local_engine_unified_hybrid_forwards_panel_and_orphan_boxes() -> None:
+    """LocalTranslationEngine forwards YOLO panel_boxes and orphan_boxes to recognize_hybrid_page."""
+    from unittest.mock import patch
+
+    from src.backend.detection.base import DetectedPanel, PageLayoutDetections
+    from src.backend.engines.local.ocr.router import HybridOCRResult
+
+    bubble = DetectedBubble(
+        id="1",
+        box_2d=(100, 600, 300, 900),
+        polygon=[(10.0, 5.0), (90.0, 5.0), (90.0, 95.0), (10.0, 95.0)],
+        confidence=0.96,
+    )
+    panel = DetectedPanel(box_2d=(50, 50, 480, 950), confidence=0.95)
+    orphan = DetectedText(box_2d=(310, 250, 390, 320), confidence=0.88)
+
+    class LayoutBarrierDetectorStub(StubDetector):
+        async def detect_full_layout(
+            self, image_bytes: bytes, original_width: int, original_height: int
+        ) -> PageLayoutDetections:
+            return PageLayoutDetections(
+                bubbles=[bubble],
+                panels=[panel],
+                sfx_boxes=[(800, 100, 900, 200)],
+                orphan_texts=[orphan],
+            )
+
+    router = OCRRouter(rapid_ocr=StubOCR("rapidocr"))
+    translator = StubTranslator(prefix="vi_")
+    engine = LocalTranslationEngine(
+        detector=LayoutBarrierDetectorStub(),
+        ocr_router=router,
+        translator=translator,
+        name="local",
+    )
+
+    hybrid_stub_output = HybridOCRResult(
+        bubble_texts=["テスト"],
+        residual_clusters=[],
+        detected_source_lang="ja",
+        ocr_engine_used="rapidocr",
+        page_dominant_vertical=True,
+    )
+
+    with patch.object(router, "recognize_hybrid_page", return_value=hybrid_stub_output) as mock_hybrid:
+        req = TranslationRequest(image=make_test_image_base64(), engine="local", target_lang="vi")
+        await engine.translate(req)
+
+    assert mock_hybrid.call_count == 1
+    assert mock_hybrid.call_args.kwargs["panel_boxes"] == [panel.box_2d]
+    assert mock_hybrid.call_args.kwargs["orphan_boxes"] == [orphan.box_2d]
