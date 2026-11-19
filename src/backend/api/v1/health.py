@@ -14,7 +14,7 @@ class HealthResponse(BaseModel):
     """Health status and engine availability model."""
 
     status: Literal["ok"] = "ok"
-    version: str = "0.1.0"
+    version: str = "0.2.0"
     engines_available: dict[str, bool] = Field(
         description="Map of registered engines to their operational readiness"
     )
@@ -35,7 +35,7 @@ async def health(request: Request) -> HealthResponse:
 
     return HealthResponse(
         status="ok",
-        version="0.1.0",
+        version="0.2.0",
         engines_available=engines_available,
         active_engine=active_engine,
     )

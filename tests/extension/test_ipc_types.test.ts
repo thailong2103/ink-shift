@@ -97,7 +97,7 @@ describe('Manifest V3 Configuration', () => {
     const content = JSON.parse(readFileSync(manifestPath, 'utf-8'));
     expect(content.manifest_version).toBe(3);
     expect(content.name).toBe('InkShift — Manga Translation Overlay');
-    expect(content.version).toBe('0.1.0');
+    expect(content.version).toBe('0.2.0');
     expect(content.permissions).toContain('storage');
     expect(content.permissions).toContain('webNavigation');
     expect(content.host_permissions).toContain('<all_urls>');
