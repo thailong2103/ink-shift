@@ -554,6 +554,32 @@ def test_detect_page_language() -> None:
     assert router.detect_page_language(["", "..."]) == "auto"
 
 
+def test_detect_page_language_dominant_script_guards() -> None:
+    """Stray false-positive CJK chars must not override dominant Latin or CJK scripts."""
+    router = OCRRouter(rapid_ocr=StubOCREngine("rapidocr"))
+
+    # Reproduces English page bug where small handwritten "I... I..." misread as '工工'
+    assert (
+        router.detect_page_language([
+            "MOM THOUGHT I WOULD BE ALRIGHT WHILE ASLEEP SO SHE WENT TO GET GROCERIES",
+            "IT'S WEDNESDAY TODAY",
+            "I WAS THIRSTY AND WENT TO THE BATHROOM FOR WATER",
+            "工工",
+        ])
+        == "en"
+    )
+    assert router.detect_page_language(["WHY AM I HERE?", "工工"]) == "en"
+
+    # Mixed CJK pages containing English product/system names remain native CJK
+    assert router.detect_page_language(["これは Apple iPhone 15 Pro です。"]) == "ja"
+    assert router.detect_page_language(["使用 SUPER ATTACK 攻击！"]) == "zh"
+    assert router.detect_page_language(["[SYSTEM] 레벨 업!"]) == "ko"
+
+    # CJK dominance beats stray minority Hangul/Hanzi artifacts
+    assert router.detect_page_language(["こんにちは 助けて！", "안녕"]) == "ja"
+    assert router.detect_page_language(["안녕하세요 잠깐만요", "工工"]) == "ko"
+
+
 @pytest.mark.asyncio
 async def test_recognize_hybrid_page_spatial_fusion_and_sfx_exclusion() -> None:
     """Hybrid pass partitions DBNet boxes into speech bubbles vs non-SFX residual prose clusters."""

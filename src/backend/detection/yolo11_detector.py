@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import gc
 import io
 import os
+import time
 from typing import Any
 
 import cv2
@@ -48,6 +50,7 @@ class YOLO11Detector:
         panel_threshold: float | None = None,
         sfx_threshold: float | None = None,
         auto_download: bool | None = None,
+        cpu_threads: int | None = None,
     ) -> None:
         settings = Settings()
         default_path = (
@@ -61,7 +64,12 @@ class YOLO11Detector:
             if execution_provider is not None
             else settings.inkshift_local_execution_provider
         )
+        self._cpu_threads = max(
+            1, cpu_threads if cpu_threads is not None else settings.inkshift_local_cpu_threads
+        )
         self._session = onnx_session
+        self._injected_session = onnx_session is not None
+        self._last_used_monotonic: float | None = None
         self._auto_download = (
             auto_download
             if auto_download is not None
@@ -97,11 +105,47 @@ class YOLO11Detector:
         """Detector identifier."""
         return "yolo11s-seg"
 
+    @property
+    def is_loaded(self) -> bool:
+        """Return True when a managed (non-injected) ONNX session is loaded in memory."""
+        return self._session is not None and not self._injected_session
+
+    @property
+    def last_used_monotonic(self) -> float | None:
+        """Return monotonic timestamp of the latest session initialization or inference."""
+        return self._last_used_monotonic
+
+    def mark_used(self) -> None:
+        """Update last-used monotonic timestamp for idle auto-unload tracking."""
+        self._last_used_monotonic = time.monotonic()
+
+    def unload_session(self) -> bool:
+        """Release managed ONNX session from memory and trigger garbage collection."""
+        if self._injected_session or self._session is None:
+            return False
+        self._session = None
+        self._last_used_monotonic = None
+        gc.collect()
+        logger.info(format_logfmt("YoloSessionUnloaded", model_path=self._model_path))
+        return True
+
     async def is_available(self) -> bool:
         """Check whether session is ready or model weights exist on disk."""
         if self._session is not None:
             return True
         return os.path.exists(self._model_path)
+
+    @staticmethod
+    def _build_session_options(
+        ort_mod: Any, *, enable_mem_pattern: bool, intra_op_threads: int | None = None
+    ) -> Any:
+        """Build sequential ONNX Runtime SessionOptions preserving DirectML arena reuse."""
+        opts = ort_mod.SessionOptions()
+        opts.execution_mode = ort_mod.ExecutionMode.ORT_SEQUENTIAL
+        opts.enable_mem_pattern = enable_mem_pattern
+        if intra_op_threads is not None:
+            opts.intra_op_num_threads = max(1, intra_op_threads)
+        return opts
 
     def _ensure_session(self) -> None:
         """Lazily initialize ONNX inference session if not already loaded."""
@@ -134,19 +178,39 @@ class YOLO11Detector:
         import importlib
 
         ort = importlib.import_module("onnxruntime")
+        normalized_provider = self._provider.lower().strip()
+        use_directml = normalized_provider in ("directml", "hybrid")
 
-        providers: list[Any]
-        if self._provider == "directml":
-            providers = [
+        if use_directml:
+            dml_opts = self._build_session_options(ort, enable_mem_pattern=False)
+            dml_providers: list[Any] = [
                 ("DmlExecutionProvider", {"device_id": 0}),
                 "CPUExecutionProvider",
             ]
-        else:
-            providers = ["CPUExecutionProvider"]
+            try:
+                self._session = ort.InferenceSession(
+                    self._model_path, sess_options=dml_opts, providers=dml_providers
+                )
+                self.mark_used()
+                logger.debug(format_logfmt("YoloSessionReady", provider="DmlExecutionProvider"))
+                return
+            except (RuntimeError, ValueError, OSError) as dml_exc:
+                logger.warning(
+                    "DirectML initialization failed for YOLO11 ('%s'); falling back to CPUExecutionProvider.",
+                    dml_exc,
+                )
 
+        cpu_opts = self._build_session_options(
+            ort, enable_mem_pattern=True, intra_op_threads=self._cpu_threads
+        )
         try:
-            self._session = ort.InferenceSession(self._model_path, providers=providers)
-            logger.debug(format_logfmt("YoloSessionReady", provider=self._provider))
+            self._session = ort.InferenceSession(
+                self._model_path, sess_options=cpu_opts, providers=["CPUExecutionProvider"]
+            )
+            self.mark_used()
+            logger.debug(
+                format_logfmt("YoloSessionReady", provider="CPUExecutionProvider", threads=self._cpu_threads)
+            )
         except Exception:
             logger.exception(format_logfmt("YoloSessionInitFailed", provider=self._provider))
             raise
@@ -243,6 +307,7 @@ class YOLO11Detector:
 
         input_name = session.get_inputs()[0].name
         outputs = session.run(None, {input_name: tensor})
+        self.mark_used()
 
         return self._parse_full_outputs(
             outputs,

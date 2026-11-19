@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import gc
 import importlib
 import io
+import os
 import time
 from collections.abc import Sequence
 from pathlib import Path
@@ -42,22 +44,60 @@ def to_bgr_array(image_np: np.ndarray[Any, Any] | Image.Image) -> np.ndarray[Any
 
 
 class RapidOCRAdapter:
-    """Multilingual OCR adapter wrapping rapidocr>=3.9.1 with explicit DirectML ORT session injection."""
+    """Multilingual OCR adapter wrapping rapidocr>=3.9.1 with Hybrid CPU/DirectML ORT session injection."""
 
     def __init__(
         self,
         rapidocr_engine: Any | None = None,
         execution_provider: str | None = None,
+        det_limit_side_len: int | None = None,
+        cpu_threads: int | None = None,
     ) -> None:
         self._engines: dict[str, Any] = {}
         self._custom_engine_provided = rapidocr_engine is not None
         self._execution_provider_override = execution_provider
+        self._det_limit_side_len_override = det_limit_side_len
+        self._cpu_threads_override = cpu_threads
         self._det_engine: Any | None = None
         self._rec_engine: Any | None = None
         self._ko_rec_engine: Any | None = None
         self._ko_load_attempted = False
+        self._last_used_monotonic: float | None = None
         if rapidocr_engine is not None:
             self._engines["default"] = rapidocr_engine
+
+    @property
+    def is_loaded(self) -> bool:
+        """Return True when any managed native PP-OCR session is loaded in memory."""
+        if self._custom_engine_provided:
+            return False
+        return any(
+            engine is not None
+            for engine in (self._det_engine, self._rec_engine, self._ko_rec_engine)
+        )
+
+    @property
+    def last_used_monotonic(self) -> float | None:
+        """Return monotonic timestamp of the latest initialization or OCR call."""
+        return self._last_used_monotonic
+
+    def mark_used(self) -> None:
+        """Record latest activity timestamp for idle auto-unload tracking."""
+        self._last_used_monotonic = time.monotonic()
+
+    def unload_sessions(self) -> bool:
+        """Release managed ONNX sessions from memory and trigger garbage collection."""
+        if self._custom_engine_provided or not self.is_loaded:
+            return False
+        self._det_engine = None
+        self._rec_engine = None
+        self._ko_rec_engine = None
+        self._engines.pop("ko", None)
+        self._ko_load_attempted = False
+        self._last_used_monotonic = None
+        gc.collect()
+        logger.info("Unloaded native PP-OCR ONNX sessions due to idle release.")
+        return True
 
     @property
     def name(self) -> str:
@@ -104,18 +144,48 @@ class RapidOCRAdapter:
         return "default"
 
     @staticmethod
-    def _create_ort_session(model_path: str, execution_provider: str = "directml") -> Any:
-        """Create onnxruntime InferenceSession bypassing rapidocr DictConfig DML bug."""
+    def _build_session_options(
+        ort_mod: Any, *, enable_mem_pattern: bool, intra_op_threads: int | None = None
+    ) -> Any:
+        """Build sequential ONNX Runtime SessionOptions preserving DirectML arena reuse."""
+        opts = ort_mod.SessionOptions()
+        opts.execution_mode = ort_mod.ExecutionMode.ORT_SEQUENTIAL
+        opts.enable_mem_pattern = enable_mem_pattern
+        if intra_op_threads is not None:
+            opts.intra_op_num_threads = max(1, intra_op_threads)
+        return opts
+
+    @staticmethod
+    def _create_ort_session(
+        model_path: str,
+        execution_provider: str = "hybrid",
+        role: str = "rec",
+        cpu_threads: int | None = None,
+    ) -> Any:
+        """Create onnxruntime InferenceSession supporting Hybrid (DET CPU, REC DirectML), DirectML, or CPU."""
         ort = importlib.import_module("onnxruntime")
-        if execution_provider == "directml":
+        normalized = execution_provider.lower().strip()
+        resolved_threads = max(
+            1,
+            cpu_threads if cpu_threads is not None else min(8, max(1, os.cpu_count() or 4)),
+        )
+        use_directml = (normalized == "directml") or (normalized == "hybrid" and role != "det")
+
+        if use_directml:
+            dml_opts = RapidOCRAdapter._build_session_options(ort, enable_mem_pattern=False)
             providers: list[Any] = [
                 ("DmlExecutionProvider", {"device_id": 0}),
                 "CPUExecutionProvider",
             ]
             try:
-                sess = ort.InferenceSession(model_path, providers=providers)
+                sess = ort.InferenceSession(model_path, sess_options=dml_opts, providers=providers)
                 active = sess.get_providers()
-                logger.debug("Loaded ORT session '%s' with providers=%s", Path(model_path).name, active)
+                logger.debug(
+                    "Loaded ORT session '%s' (role=%s) with providers=%s",
+                    Path(model_path).name,
+                    role,
+                    active,
+                )
                 return sess
             except (RuntimeError, ValueError, OSError) as dml_exc:
                 logger.warning(
@@ -123,7 +193,31 @@ class RapidOCRAdapter:
                     Path(model_path).name,
                     dml_exc,
                 )
-        return ort.InferenceSession(model_path, providers=["CPUExecutionProvider"])
+
+        cpu_opts = RapidOCRAdapter._build_session_options(
+            ort, enable_mem_pattern=True, intra_op_threads=resolved_threads
+        )
+        return ort.InferenceSession(
+            model_path, sess_options=cpu_opts, providers=["CPUExecutionProvider"]
+        )
+
+    def _resolve_runtime_params(self) -> tuple[str, int, int]:
+        """Resolve execution provider, DBNet limit_side_len, and CPU threads from overrides or Settings."""
+        from src.backend.config import Settings
+
+        settings = Settings()
+        provider = self._execution_provider_override or settings.inkshift_local_execution_provider
+        det_limit = (
+            self._det_limit_side_len_override
+            if self._det_limit_side_len_override is not None
+            else settings.inkshift_local_ocr_det_limit_side_len
+        )
+        cpu_threads = (
+            self._cpu_threads_override
+            if self._cpu_threads_override is not None
+            else settings.inkshift_local_cpu_threads
+        )
+        return provider, max(320, det_limit), max(1, cpu_threads)
 
     def _load_rapidocr_base_cfg(self) -> tuple[Any, Path, Any, Any, Any]:
         """Import rapidocr submodules and load canonical OmegaConf base config."""
@@ -151,7 +245,7 @@ class RapidOCRAdapter:
         )
 
     def _ensure_det_and_rec(self) -> None:
-        """Lazily initialize PP-OCRv6_det_medium and PP-OCRv6_rec_medium DirectML engines."""
+        """Lazily initialize PP-OCRv6_det_medium and PP-OCRv6_rec_medium engines."""
         if self._det_engine is not None and self._rec_engine is not None:
             return
 
@@ -162,7 +256,7 @@ class RapidOCRAdapter:
         from src.backend.detection.downloader import ensure_ocr_model_files
 
         settings = Settings()
-        provider = self._execution_provider_override or settings.inkshift_local_execution_provider
+        provider, det_limit, cpu_threads = self._resolve_runtime_params()
         det_path = ensure_ocr_model_files(
             "det",
             dest_path=settings.inkshift_local_ocr_det_model_path,
@@ -179,12 +273,16 @@ class RapidOCRAdapter:
                 "Run 'python scripts/download_models.py' to provision OCR weights."
             )
 
-        det_sess = self._create_ort_session(str(det_path), execution_provider=provider)
-        rec_sess = self._create_ort_session(str(rec_path), execution_provider=provider)
+        det_sess = self._create_ort_session(
+            str(det_path), execution_provider=provider, role="det", cpu_threads=cpu_threads
+        )
+        rec_sess = self._create_ort_session(
+            str(rec_path), execution_provider=provider, role="rec", cpu_threads=cpu_threads
+        )
 
         det_container = omegaconf_cls.to_container(base_cfg.Det, resolve=False)
         det_container.update({
-            "limit_side_len": 1920,
+            "limit_side_len": det_limit,
             "limit_type": "max",
             "thresh": 0.2,
             "box_thresh": 0.35,
@@ -208,10 +306,12 @@ class RapidOCRAdapter:
 
         self._det_engine = text_det_cls(cfg_det)
         self._rec_engine = text_rec_cls(cfg_rec)
+        self.mark_used()
         logger.info(
-            "Initialized PP-OCRv6_medium (det=%s, rec=%s) with providers det=%s, rec=%s",
+            "Initialized PP-OCRv6_medium (det=%s, rec=%s, limit_side_len=%d) with providers det=%s, rec=%s",
             det_path.name,
             rec_path.name,
+            det_limit,
             det_sess.get_providers()[0],
             rec_sess.get_providers()[0],
         )
@@ -240,8 +340,10 @@ class RapidOCRAdapter:
             logger.warning("Korean OCR weights unavailable; falling back to default PP-OCRv6 recognizer.")
             return None
 
-        provider = self._execution_provider_override or settings.inkshift_local_execution_provider
-        ko_sess = self._create_ort_session(str(ko_path), execution_provider=provider)
+        provider, _det_limit, cpu_threads = self._resolve_runtime_params()
+        ko_sess = self._create_ort_session(
+            str(ko_path), execution_provider=provider, role="rec", cpu_threads=cpu_threads
+        )
         ko_container = omegaconf_cls.to_container(base_cfg.Rec, resolve=False)
         ko_container.update({
             "engine_cfg": base_cfg.EngineConfig.onnxruntime,
@@ -253,6 +355,7 @@ class RapidOCRAdapter:
         cfg_ko = omegaconf_cls.create(ko_container, flags={"allow_objects": True})
         self._ko_rec_engine = text_rec_cls(cfg_ko)
         self._engines["ko"] = self._ko_rec_engine
+        self.mark_used()
         logger.info(
             "Lazy-loaded Korean recognizer '%s' with provider=%s",
             ko_path.name,
@@ -277,6 +380,7 @@ class RapidOCRAdapter:
             input_img = image_bgr
 
         det_res = self._det_engine(input_img)
+        self.mark_used()
         if det_res is None or det_res.boxes is None or len(det_res.boxes) == 0:
             return []
 
@@ -333,6 +437,7 @@ class RapidOCRAdapter:
             return results
 
         rec_out = rec_engine(text_rec_input_cls(img=valid_crops))
+        self.mark_used()
         txts = rec_out.txts or ()
         scores = rec_out.scores or ()
         for pos, orig_idx in enumerate(valid_indices):

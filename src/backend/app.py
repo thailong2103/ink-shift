@@ -1,7 +1,11 @@
 """FastAPI application factory, lifespan management, and middleware configuration."""
 
+import asyncio
+import gc
+import time
 from collections.abc import AsyncGenerator
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
+from typing import Any
 
 import httpx
 from fastapi import FastAPI, Request
@@ -45,6 +49,92 @@ from src.backend.security.middleware import (
 )
 
 logger = get_logger("inkshift.app")
+
+
+def _latest_loaded_monotonic(detector: Any, rapid_ocr: Any) -> float | None:
+    """Return latest last-used monotonic timestamp across loaded local ONNX components."""
+    timestamps: list[float] = []
+    for component in (detector, rapid_ocr):
+        if component is not None and bool(getattr(component, "is_loaded", False)):
+            ts = getattr(component, "last_used_monotonic", None)
+            if isinstance(ts, (int, float)):
+                timestamps.append(float(ts))
+    return max(timestamps) if timestamps else None
+
+
+def _unload_local_sessions(detector: Any, rapid_ocr: Any) -> tuple[bool, bool]:
+    """Safely invoke unload methods on detector and rapid_ocr adapters."""
+    det_unloaded = False
+    ocr_unloaded = False
+    det_unload_fn = getattr(detector, "unload_session", None)
+    if callable(det_unload_fn):
+        det_unloaded = bool(det_unload_fn())
+    ocr_unload_fn = getattr(rapid_ocr, "unload_sessions", None)
+    if callable(ocr_unload_fn):
+        ocr_unloaded = bool(ocr_unload_fn())
+    if det_unloaded or ocr_unloaded:
+        gc.collect()
+    return det_unloaded, ocr_unloaded
+
+
+async def maybe_unload_idle_local_models(
+    detector: Any,
+    rapid_ocr: Any,
+    local_lock: PriorityLocalLock,
+    idle_ttl_seconds: float,
+    now_monotonic: float | None = None,
+) -> bool:
+    """Release loaded ONNX sessions when idle past TTL without contending with active inference."""
+    if idle_ttl_seconds <= 0.0:
+        return False
+
+    latest = _latest_loaded_monotonic(detector, rapid_ocr)
+    if latest is None:
+        return False
+
+    check_now = time.monotonic() if now_monotonic is None else now_monotonic
+    if (check_now - latest) < idle_ttl_seconds or local_lock.locked():
+        return False
+
+    async with local_lock.acquire_priority("P2"):
+        recheck_latest = _latest_loaded_monotonic(detector, rapid_ocr)
+        recheck_now = time.monotonic() if now_monotonic is None else now_monotonic
+        if recheck_latest is None or (recheck_now - recheck_latest) < idle_ttl_seconds:
+            return False
+
+        det_unloaded, ocr_unloaded = _unload_local_sessions(detector, rapid_ocr)
+        if det_unloaded or ocr_unloaded:
+            logger.info(
+                format_logfmt(
+                    "LocalModelsIdleUnloaded",
+                    idle_ttl_s=round(idle_ttl_seconds, 2),
+                    detector_unloaded=det_unloaded,
+                    ocr_unloaded=ocr_unloaded,
+                )
+            )
+            return True
+    return False
+
+
+async def _idle_unload_loop(
+    detector: Any,
+    rapid_ocr: Any,
+    local_lock: PriorityLocalLock,
+    idle_ttl_seconds: float,
+    poll_interval_seconds: float,
+) -> None:
+    """Periodically check local inference idleness and release ONNX sessions cleanly."""
+    while True:
+        await asyncio.sleep(poll_interval_seconds)
+        try:
+            await maybe_unload_idle_local_models(
+                detector=detector,
+                rapid_ocr=rapid_ocr,
+                local_lock=local_lock,
+                idle_ttl_seconds=idle_ttl_seconds,
+            )
+        except (RuntimeError, ValueError, OSError) as exc:
+            logger.warning(format_logfmt("IdleUnloadLoopError", error=str(exc)))
 
 
 @asynccontextmanager
@@ -94,6 +184,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     detector = getattr(app.state, "detector", None) or YOLO11Detector(
         model_path=settings.inkshift_local_detector_model_path or None,
         execution_provider=settings.inkshift_local_execution_provider,
+        cpu_threads=settings.inkshift_local_cpu_threads,
     )
     app.state.detector = detector
 
@@ -143,7 +234,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     registry.register(cloud_engine, is_default=is_cloud_default)
 
     # 6. Initialize Local On-Device Translation OCR and Translators
-    rapid_ocr_adapter = RapidOCRAdapter()
+    rapid_ocr_adapter = getattr(app.state, "rapid_ocr", None) or RapidOCRAdapter(
+        execution_provider=settings.inkshift_local_execution_provider,
+        det_limit_side_len=settings.inkshift_local_ocr_det_limit_side_len,
+        cpu_threads=settings.inkshift_local_cpu_threads,
+    )
+    app.state.rapid_ocr = rapid_ocr_adapter
     ocr_router = OCRRouter(
         rapid_ocr=rapid_ocr_adapter,
         default_model=settings.inkshift_local_default_ocr,
@@ -210,15 +306,42 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     registry.register(local_engine, is_default=is_local_default)
 
     app.state.registry = registry
+    idle_ttl = settings.inkshift_local_idle_unload_seconds
+    idle_unload_task: asyncio.Task[None] | None = None
+    if idle_ttl > 0.0:
+        poll_interval = min(15.0, max(0.05, idle_ttl / 4.0))
+        idle_unload_task = asyncio.create_task(
+            _idle_unload_loop(
+                detector=detector,
+                rapid_ocr=rapid_ocr_adapter,
+                local_lock=app.state.local_semaphore,
+                idle_ttl_seconds=idle_ttl,
+                poll_interval_seconds=poll_interval,
+            )
+        )
+    app.state.idle_unload_task = idle_unload_task
+
     app_logger = setup_logging(
         log_level=settings.inkshift_log_level,
         log_dir=settings.inkshift_log_dir,
     )
-    app_logger.info("InkShift Backend initialized. Default engine: %s, DB: %s", settings.inkshift_default_engine, settings.inkshift_db_path)
+    app_logger.info(
+        "InkShift Backend initialized. Default engine: %s, Provider: %s, DetLimit: %d, IdleUnload: %.0fs, DB: %s",
+        settings.inkshift_default_engine,
+        settings.inkshift_local_execution_provider,
+        settings.inkshift_local_ocr_det_limit_side_len,
+        idle_ttl,
+        settings.inkshift_db_path,
+    )
 
     yield
 
     # Teardown
+    if idle_unload_task is not None:
+        idle_unload_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await idle_unload_task
+    _unload_local_sessions(detector, rapid_ocr_adapter)
     await app.state.http_client.aclose()
 
 

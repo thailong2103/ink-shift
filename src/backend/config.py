@@ -54,6 +54,9 @@ class Settings:
         inkshift_local_model_dir: str | None = None,
         inkshift_local_default_ocr: str | None = None,
         inkshift_local_execution_provider: str | None = None,
+        inkshift_local_ocr_det_limit_side_len: int | None = None,
+        inkshift_local_idle_unload_seconds: float | None = None,
+        inkshift_local_cpu_threads: int | None = None,
         inkshift_local_default_translator: str | None = None,
         inkshift_local_detector_model_path: str | None = None,
         inkshift_local_manga_ocr_model_path: str | None = None,
@@ -176,11 +179,31 @@ class Settings:
             if inkshift_local_default_ocr is not None
             else os.getenv("INKSHIFT_LOCAL_DEFAULT_OCR", "auto")
         )
-        self.inkshift_local_execution_provider: str = (
+        raw_execution_provider = (
             inkshift_local_execution_provider
             if inkshift_local_execution_provider is not None
-            else os.getenv("INKSHIFT_LOCAL_EXECUTION_PROVIDER", "directml")
+            else os.getenv("INKSHIFT_LOCAL_EXECUTION_PROVIDER", "hybrid")
         )
+        self.inkshift_local_execution_provider: str = raw_execution_provider.strip().lower() or "hybrid"
+        self.inkshift_local_ocr_det_limit_side_len: int = max(
+            320,
+            inkshift_local_ocr_det_limit_side_len
+            if inkshift_local_ocr_det_limit_side_len is not None
+            else int(os.getenv("INKSHIFT_LOCAL_OCR_DET_LIMIT_SIDE_LEN", "1280")),
+        )
+        self.inkshift_local_idle_unload_seconds: float = max(
+            0.0,
+            inkshift_local_idle_unload_seconds
+            if inkshift_local_idle_unload_seconds is not None
+            else float(os.getenv("INKSHIFT_LOCAL_IDLE_UNLOAD_SECONDS", "180.0")),
+        )
+        default_cpu_threads = min(8, max(1, os.cpu_count() or 4))
+        raw_cpu_threads = (
+            inkshift_local_cpu_threads
+            if inkshift_local_cpu_threads is not None
+            else int(os.getenv("INKSHIFT_LOCAL_CPU_THREADS", "0"))
+        )
+        self.inkshift_local_cpu_threads: int = raw_cpu_threads if raw_cpu_threads > 0 else default_cpu_threads
         self.inkshift_local_default_translator: str = (
             inkshift_local_default_translator
             if inkshift_local_default_translator is not None

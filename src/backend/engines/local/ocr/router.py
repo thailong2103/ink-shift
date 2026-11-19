@@ -98,12 +98,16 @@ class OCRRouter:
         kana_count = len(self.JAPANESE_KANA_REGEX.findall(combined))
         hanzi_count = len(self.HANZI_SCRIPT_REGEX.findall(combined))
         latin_count = len(self.LATIN_SCRIPT_REGEX.findall(combined))
+        cjk_total = hangul_count + kana_count + hanzi_count
 
-        if hangul_count >= 2:
+        # Guard against stray OCR CJK noise (e.g. '工工') overriding dominant Latin dialogue
+        if latin_count >= 8 and (cjk_total == 0 or latin_count >= cjk_total * 4):
+            return "en"
+        if hangul_count >= 2 and hangul_count >= kana_count and hangul_count >= hanzi_count:
             return "ko"
-        if kana_count >= 2:
+        if kana_count >= 2 and kana_count >= hangul_count:
             return "ja"
-        if hanzi_count >= 2:
+        if hanzi_count >= 2 and hanzi_count >= hangul_count:
             return "zh"
         if latin_count >= 3:
             return "en"

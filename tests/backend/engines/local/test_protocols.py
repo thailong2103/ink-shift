@@ -173,15 +173,31 @@ def test_translator_protocol_conformance() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_settings_local_defaults() -> None:
+def test_settings_local_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
     """Settings should provide expected default configurations for local engine."""
+    for env_key in (
+        "INKSHIFT_LOCAL_MODEL_DIR",
+        "INKSHIFT_LOCAL_DEFAULT_OCR",
+        "INKSHIFT_LOCAL_EXECUTION_PROVIDER",
+        "INKSHIFT_LOCAL_DEFAULT_TRANSLATOR",
+        "INKSHIFT_LOCAL_DETECTOR_MODEL_PATH",
+        "INKSHIFT_LOCAL_MANGA_OCR_MODEL_PATH",
+        "INKSHIFT_LOCAL_OCR_DET_LIMIT_SIDE_LEN",
+        "INKSHIFT_LOCAL_IDLE_UNLOAD_SECONDS",
+        "INKSHIFT_LOCAL_CPU_THREADS",
+    ):
+        monkeypatch.delenv(env_key, raising=False)
+
     settings = Settings()
     assert settings.inkshift_local_model_dir == "./.cache/inkshift/models"
     assert settings.inkshift_local_default_ocr == "auto"
-    assert settings.inkshift_local_execution_provider == "directml"
+    assert settings.inkshift_local_execution_provider == "hybrid"
     assert settings.inkshift_local_default_translator == "google-free"
     assert settings.inkshift_local_detector_model_path == ""
     assert settings.inkshift_local_manga_ocr_model_path == ""
+    assert settings.inkshift_local_ocr_det_limit_side_len == 1280
+    assert settings.inkshift_local_idle_unload_seconds == 180.0
+    assert settings.inkshift_local_cpu_threads >= 1
 
 
 def test_settings_local_overrides(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -192,6 +208,9 @@ def test_settings_local_overrides(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("INKSHIFT_LOCAL_DEFAULT_TRANSLATOR", "llm-text")
     monkeypatch.setenv("INKSHIFT_LOCAL_DETECTOR_MODEL_PATH", "/models/detector.onnx")
     monkeypatch.setenv("INKSHIFT_LOCAL_MANGA_OCR_MODEL_PATH", "/models/manga.onnx")
+    monkeypatch.setenv("INKSHIFT_LOCAL_OCR_DET_LIMIT_SIDE_LEN", "960")
+    monkeypatch.setenv("INKSHIFT_LOCAL_IDLE_UNLOAD_SECONDS", "60")
+    monkeypatch.setenv("INKSHIFT_LOCAL_CPU_THREADS", "4")
 
     settings = Settings()
     assert settings.inkshift_local_model_dir == "/custom/models"
@@ -200,3 +219,6 @@ def test_settings_local_overrides(monkeypatch: pytest.MonkeyPatch) -> None:
     assert settings.inkshift_local_default_translator == "llm-text"
     assert settings.inkshift_local_detector_model_path == "/models/detector.onnx"
     assert settings.inkshift_local_manga_ocr_model_path == "/models/manga.onnx"
+    assert settings.inkshift_local_ocr_det_limit_side_len == 960
+    assert settings.inkshift_local_idle_unload_seconds == 60.0
+    assert settings.inkshift_local_cpu_threads == 4

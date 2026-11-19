@@ -302,20 +302,160 @@ async def test_rapid_ocr_create_ort_session_directml_with_cpu_fallback() -> None
     dummy_cpu_sess = MagicMock()
     dummy_cpu_sess.get_providers.return_value = ["CPUExecutionProvider"]
 
-    calls: list[list[Any]] = []
+    calls: list[tuple[list[Any], Any]] = []
 
-    def fake_inference_session(path: str, providers: list[Any]) -> Any:
-        calls.append(providers)
-        if any(isinstance(p, tuple) and p[0] == "DmlExecutionProvider" for p in providers):
+    def fake_inference_session(
+        path: str, sess_options: Any = None, providers: list[Any] | None = None
+    ) -> Any:
+        prov_list = providers or []
+        calls.append((prov_list, sess_options))
+        if any(isinstance(p, tuple) and p[0] == "DmlExecutionProvider" for p in prov_list):
             raise RuntimeError("DirectML unavailable on CI host")
         return dummy_cpu_sess
 
     with patch("onnxruntime.InferenceSession", side_effect=fake_inference_session):
-        sess = RapidOCRAdapter._create_ort_session("dummy.onnx", execution_provider="directml")
+        sess = RapidOCRAdapter._create_ort_session("dummy.onnx", execution_provider="directml", role="rec")
         assert sess is dummy_cpu_sess
         assert len(calls) == 2
-        assert calls[0][0][0] == "DmlExecutionProvider"
-        assert calls[1] == ["CPUExecutionProvider"]
+        assert calls[0][0][0][0] == "DmlExecutionProvider"
+        assert calls[0][1] is not None
+        assert calls[0][1].enable_mem_pattern is False
+        assert calls[1][0] == ["CPUExecutionProvider"]
+
+
+def test_rapid_ocr_hybrid_routes_det_cpu_and_rec_directml() -> None:
+    """Hybrid mode routes DET to CPUExecutionProvider and REC/KO_REC to DmlExecutionProvider."""
+    from unittest.mock import MagicMock, patch
+
+    import onnxruntime as ort
+
+    recorded: list[tuple[str, Any, list[Any]]] = []
+
+    def fake_inference_session(
+        path: str, sess_options: Any = None, providers: list[Any] | None = None
+    ) -> Any:
+        recorded.append((path, sess_options, providers or []))
+        sess = MagicMock()
+        sess.get_providers.return_value = providers or []
+        return sess
+
+    with patch("onnxruntime.InferenceSession", side_effect=fake_inference_session):
+        RapidOCRAdapter._create_ort_session("det.onnx", execution_provider="hybrid", role="det", cpu_threads=6)
+        RapidOCRAdapter._create_ort_session("rec.onnx", execution_provider="hybrid", role="rec", cpu_threads=6)
+        RapidOCRAdapter._create_ort_session("rec.onnx", execution_provider="cpu", role="rec", cpu_threads=4)
+
+    det_path, det_opts, det_provs = recorded[0]
+    assert det_path == "det.onnx"
+    assert det_provs == ["CPUExecutionProvider"]
+    assert det_opts.intra_op_num_threads == 6
+    assert det_opts.execution_mode == ort.ExecutionMode.ORT_SEQUENTIAL
+
+    rec_path, rec_opts, rec_provs = recorded[1]
+    assert rec_path == "rec.onnx"
+    assert rec_provs[0][0] == "DmlExecutionProvider"
+    assert rec_opts.enable_mem_pattern is False
+    assert rec_opts.execution_mode == ort.ExecutionMode.ORT_SEQUENTIAL
+
+    cpu_path, cpu_opts, cpu_provs = recorded[2]
+    assert cpu_path == "rec.onnx"
+    assert cpu_provs == ["CPUExecutionProvider"]
+    assert cpu_opts.intra_op_num_threads == 4
+
+
+def test_rapid_ocr_det_limit_side_len_default_1280_and_override(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """_ensure_det_and_rec applies limit_side_len=1280 by default and honors constructor override."""
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock, patch
+
+    monkeypatch.delenv("INKSHIFT_LOCAL_OCR_DET_LIMIT_SIDE_LEN", raising=False)
+    det_file = tmp_path / "det.onnx"
+    rec_file = tmp_path / "rec.onnx"
+    det_file.write_bytes(b"DET")
+    rec_file.write_bytes(b"REC")
+
+    captured_det_cfgs: list[dict[str, Any]] = []
+
+    class FakeOmegaConf:
+        @staticmethod
+        def to_container(node: Any, resolve: bool = False) -> dict[str, Any]:
+            return dict(node)
+
+        @staticmethod
+        def create(data: dict[str, Any], flags: dict[str, Any] | None = None) -> dict[str, Any]:
+            return data
+
+    class FakeDet:
+        def __init__(self, cfg: dict[str, Any]) -> None:
+            captured_det_cfgs.append(cfg)
+
+    class FakeRec:
+        def __init__(self, cfg: dict[str, Any]) -> None:
+            self.cfg = cfg
+
+    base_cfg = SimpleNamespace(
+        Det={},
+        Rec={},
+        EngineConfig=SimpleNamespace(onnxruntime={}),
+    )
+    fake_sess = MagicMock()
+    fake_sess.get_providers.return_value = ["CPUExecutionProvider"]
+
+    def fake_ensure_ocr(kind: str, **_kwargs: Any) -> Path:
+        return det_file if kind == "det" else rec_file
+
+    adapter_default = RapidOCRAdapter(execution_provider="hybrid")
+    adapter_override = RapidOCRAdapter(execution_provider="hybrid", det_limit_side_len=960)
+
+    with (
+        patch.object(
+            RapidOCRAdapter,
+            "_load_rapidocr_base_cfg",
+            return_value=(base_cfg, tmp_path, FakeDet, FakeRec, FakeOmegaConf),
+        ),
+        patch("src.backend.detection.downloader.ensure_ocr_model_files", side_effect=fake_ensure_ocr),
+        patch.object(RapidOCRAdapter, "_create_ort_session", return_value=fake_sess),
+    ):
+        adapter_default._ensure_det_and_rec()
+        adapter_override._ensure_det_and_rec()
+
+    assert captured_det_cfgs[0]["limit_side_len"] == 1280
+    assert captured_det_cfgs[1]["limit_side_len"] == 960
+
+
+def test_rapid_ocr_unload_sessions_releases_and_preserves_mocks() -> None:
+    """unload_sessions releases native engines cleanly while preserving injected test mocks."""
+    from unittest.mock import MagicMock
+
+    adapter = RapidOCRAdapter(rapidocr_engine=None)
+    assert adapter.is_loaded is False
+    assert adapter.unload_sessions() is False
+
+    adapter._det_engine = MagicMock()
+    adapter._rec_engine = MagicMock()
+    adapter._ko_rec_engine = MagicMock()
+    adapter._engines["ko"] = adapter._ko_rec_engine
+    adapter._ko_load_attempted = True
+    adapter.mark_used()
+
+    assert adapter.is_loaded is True
+    assert adapter.last_used_monotonic is not None
+    assert adapter.unload_sessions() is True
+    assert adapter.is_loaded is False
+    assert adapter._det_engine is None
+    assert adapter._rec_engine is None
+    assert adapter._ko_rec_engine is None
+    assert "ko" not in adapter._engines
+    assert adapter._ko_load_attempted is False
+    assert adapter.last_used_monotonic is None
+    assert adapter.unload_sessions() is False
+
+    mock_engine = MockRapidOCREngine([])
+    mock_adapter = RapidOCRAdapter(rapidocr_engine=mock_engine)
+    assert mock_adapter.is_loaded is False
+    assert mock_adapter.unload_sessions() is False
+    assert mock_adapter._engines["default"] is mock_engine
 
 
 @pytest.mark.asyncio

@@ -651,3 +651,81 @@ async def test_yolo11_detector_is_available_checks_disk_and_session(tmp_path: Pa
     model_file.write_bytes(b"DUMMY_ONNX_DATA")
     assert await detector.is_available() is True
 
+
+def test_yolo11_detector_hybrid_uses_directml_session_options_and_unload(tmp_path: Path) -> None:
+    """Hybrid/DirectML configures ORT SessionOptions, CPU falls back cleanly, and unload skips mocks."""
+    from unittest.mock import MagicMock, patch
+
+    import onnxruntime as ort
+
+    model_file = tmp_path / "yolo11s-seg.onnx"
+    model_file.write_bytes(b"DUMMY_YOLO_ONNX")
+
+    calls: list[tuple[Any, list[Any]]] = []
+    dummy_sess = MagicMock()
+
+    def fake_session(
+        path: str, sess_options: Any = None, providers: list[Any] | None = None
+    ) -> Any:
+        assert path == str(model_file)
+        calls.append((sess_options, providers or []))
+        return dummy_sess
+
+    # 1. Hybrid uses DirectML with enable_mem_pattern=False and ORT_SEQUENTIAL
+    detector = YOLO11Detector(model_path=str(model_file), execution_provider="hybrid", cpu_threads=6)
+    with patch("onnxruntime.InferenceSession", side_effect=fake_session):
+        detector._ensure_session()
+
+    assert len(calls) == 1
+    dml_opts, dml_provs = calls[0]
+    assert dml_provs[0][0] == "DmlExecutionProvider"
+    assert dml_opts.enable_mem_pattern is False
+    assert dml_opts.execution_mode == ort.ExecutionMode.ORT_SEQUENTIAL
+    assert detector.is_loaded is True
+    assert detector.last_used_monotonic is not None
+
+    # Unload releases non-injected session cleanly
+    assert detector.unload_session() is True
+    assert detector.is_loaded is False
+    assert detector._session is None
+    assert detector.last_used_monotonic is None
+    assert detector.unload_session() is False
+
+    # 2. DirectML failure in hybrid mode falls back to CPUExecutionProvider with configured threads
+    calls.clear()
+
+    def failing_dml_session(
+        path: str, sess_options: Any = None, providers: list[Any] | None = None
+    ) -> Any:
+        prov_list = providers or []
+        calls.append((sess_options, prov_list))
+        if any(isinstance(p, tuple) and p[0] == "DmlExecutionProvider" for p in prov_list):
+            raise RuntimeError("DirectML disabled")
+        return dummy_sess
+
+    detector_fb = YOLO11Detector(model_path=str(model_file), execution_provider="hybrid", cpu_threads=5)
+    with patch("onnxruntime.InferenceSession", side_effect=failing_dml_session):
+        detector_fb._ensure_session()
+
+    assert len(calls) == 2
+    assert calls[0][1][0][0] == "DmlExecutionProvider"
+    assert calls[1][1] == ["CPUExecutionProvider"]
+    assert calls[1][0].intra_op_num_threads == 5
+
+    # 3. Explicit cpu skips DirectML completely
+    calls.clear()
+    detector_cpu = YOLO11Detector(model_path=str(model_file), execution_provider="cpu", cpu_threads=4)
+    with patch("onnxruntime.InferenceSession", side_effect=fake_session):
+        detector_cpu._ensure_session()
+
+    assert len(calls) == 1
+    assert calls[0][1] == ["CPUExecutionProvider"]
+    assert calls[0][0].intra_op_num_threads == 4
+
+    # 4. Injected mock session is preserved on unload_session()
+    injected = MagicMock()
+    mock_det = YOLO11Detector(onnx_session=injected)
+    assert mock_det.is_loaded is False
+    assert mock_det.unload_session() is False
+    assert mock_det._session is injected
+
