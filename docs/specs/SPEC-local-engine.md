@@ -1,7 +1,7 @@
 # Spec: On-Device Manga Translation Engine (`local-engine`)
 
 > **Module ID:** `local-engine`  
-> **Source ADR:** [ADR-006-local-engine-architecture.md](../decisions/ADR-006-local-engine-architecture.md), [ADR-007-yolo11-manga-detection-and-visual-grounding.md](../decisions/ADR-007-yolo11-manga-detection-and-visual-grounding.md), [ADR-008-consolidated-engine-architecture-and-shared-detection.md](../decisions/ADR-008-consolidated-engine-architecture-and-shared-detection.md)  
+> **Source ADR:** [ADR-006-local-engine-architecture.md](../decisions/ADR-006-local-engine-architecture.md), [ADR-007-yolo11-manga-detection-and-visual-grounding.md](../decisions/ADR-007-yolo11-manga-detection-and-visual-grounding.md), [ADR-008-consolidated-engine-architecture-and-shared-detection.md](../decisions/ADR-008-consolidated-engine-architecture-and-shared-detection.md), [ADR-019-ppocrv6-unified-hybrid-detection-and-auto-ocr.md](../decisions/ADR-019-ppocrv6-unified-hybrid-detection-and-auto-ocr.md)  
 > **Source Intent:** [docs/intent/local-engine.md](../intent/local-engine.md)  
 > **Source Research:** [docs/research/RESEARCH-local-engine.md](../research/RESEARCH-local-engine.md) & [docs/research/RESEARCH-manga-detector-yolo11.md](../research/RESEARCH-manga-detector-yolo11.md)  
 > **Parent Map:** [CAPABILITY_MAP.md](CAPABILITY_MAP.md)  
@@ -18,8 +18,8 @@
 
 Before proceeding to implementation, the following architectural assumptions are recorded:
 1. **Target Hardware & Acceleration:** Target workstation runs Windows 11 with an AMD Ryzen 7 8845HS APU (Zen 4, 8C/16T, AVX-512) and AMD Radeon 780M iGPU (RDNA 3, 12 CUs) backed by 32GB RAM (UMA). Microsoft DirectML via `onnxruntime-directml` serves as the primary hardware acceleration provider, with `CPUExecutionProvider` (AVX-512) as the automated node fallback.
-2. **Permanent In-Memory Session Cache:** Given 32GB unified RAM and lightweight model weights (~39.3MB for YOLO11s-seg + ~15MB for RapidOCR), all ONNX `InferenceSession` instances (`YOLO11s-seg`, `RapidOCR`) remain resident in memory across requests. No unloading, disk re-reading, or memory deallocation occurs between page translations.
-3. **Model Weight Storage:** Pre-trained ONNX model files are stored locally under `.cache/inkshift/models/yolo11s-seg.onnx`. Comic-Text-Detector weights are deprecated and purged.
+2. **Permanent In-Memory Session Cache:** Given 32GB unified RAM and lightweight model weights (~39.3MB for YOLO11s-seg + ~139MB for `PP-OCRv6_medium`, plus optional ~13.5MB Korean `PP-OCRv5` recognizer), all ONNX `InferenceSession` instances (`YOLO11s-seg`, `PP-OCRv6_det_medium`, `PP-OCRv6_rec_medium`) remain resident in memory across requests. No unloading, disk re-reading, or memory deallocation occurs between page translations.
+3. **Model Weight Storage:** Pre-trained ONNX model files are stored locally under `.cache/inkshift/models/` (`yolo11s-seg.onnx`, `PP-OCRv6_det_medium.onnx`, `PP-OCRv6_rec_medium.onnx`, and lazy `korean_PP-OCRv5_rec_mobile.onnx`). Comic-Text-Detector weights are deprecated and purged.
 4. **Coordinate Integrity:** Coordinate outputs strictly comply with `api-contract`: normalized integer bounding boxes $[ymin, xmin, ymax, xmax]$ in $[0, 1000]$, and simplified polygon contours as relative percentages $[0.0, 100.0]$.
 5. **Zero API Cost by Default:** Default translation runs through `deep-translator` using Google Translate web batch requests, requiring $0.00$ API spend. An optional `LLMTextTranslator` mode reuses `gemini_api_key` and `xkiro_api_key` from Module 3 for enhanced literary phrasing.
 
@@ -53,8 +53,8 @@ flowchart TD
    - **Tier 1 (Panel):** Assign bubbles to panels; sort panels Top-to-Bottom, Right-to-Left. Unassigned bubbles map to a default page panel.
    - **Tier 2 (In-Panel):** Sort bubbles inside each panel by $Score = 1.5Y - X$ (prioritizing top and right bubbles).
 4. **Connected / Merged Bubble Support:** When adjacent speech bubbles merge into a single contour, YOLO11 separates independent child text blocks (`DetectedText`). Frontend renders 1 white polygon mask with multiple discrete inner text containers.
-5. **Unified DirectML RapidOCR (ADR-017):** Single robust OCR engine wrapping PP-OCRv4 via ONNX Runtime DirectML. Natively supports Japanese (Kanji/Kana), English, Korean, and Chinese with sub-second execution on AMD Radeon 780M without requiring PyTorch or CUDA.
-6. **Manga Typography & De-hyphenation:** Merge multi-line vertical Japanese text cleanly, and de-hyphenate multi-line English dialogue (`under-` + `stand` $\to$ `understand`).
+5. **Unified Hybrid Detection & DirectML `PP-OCRv6_medium` (ADR-019):** Combines `YOLO11s-seg` (smooth curved bubble contours & SFX exclusion masks) with `PP-OCRv6_det_medium` + `PP-OCRv6_rec_medium` (`rapidocr>=3.9.1`, explicit DirectML `OrtInferSession` injection) in one pass—translating speech bubbles and residual non-SFX prose/narration clusters simultaneously across Japanese, Simplified/Traditional Chinese, and English, with automatic chapter-cached fallback to `korean_PP-OCRv5_rec_mobile` for Korean manhwa, bi-directional RTL/LTR clustering, Furigana filtering, and CJK de-spacing.
+6. **Manga Typography & De-hyphenation:** Merge vertical RTL and horizontal LTR lines cleanly, strip CJK inter-character spaces across Japanese and Chinese (`clean_cjk_text`), and de-hyphenate multi-line English dialogue (`under-` + `stand` $\to$ `understand`).
 7. **Fast Zero-Cost Batch Translation:** Translate all speech bubbles on a manga page in a single batch network call ($<350$ms) via `deep-translator`.
 
 ---
@@ -70,8 +70,7 @@ numpy = ">=1.26.0"
 Pillow = ">=10.2.0"
 
 # OCR Engines
-rapidocr-onnxruntime = ">=1.3.0"
-# manga-ocr ONNX graph or manga-ocr-torchless
+rapidocr = ">=3.9.1"
 
 # Translation
 deep-translator = ">=1.11.4"

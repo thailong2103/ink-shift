@@ -1,6 +1,6 @@
 # ADR-018: Multilingual DirectML OCR Model Pool, Inverted Baseline Probing, and Language Routing
 
-- **Status:** Accepted (Amends ADR-017)
+- **Status:** Superseded by ADR-019
 - **Date:** 2026-11-02
 - **Decision-Maker:** Solo Developer (human)
 - **Consulted:** AI Agent

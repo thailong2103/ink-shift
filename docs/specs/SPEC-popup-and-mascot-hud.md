@@ -143,7 +143,7 @@ export interface InkShiftStorageSchema {
   opacity: number;                  // Default: 88
   speechBubbleBg: string;           // Default: '#FAF5F0'
   speechBubbleFont: string;         // Default: 'itim'
-  sourceLang: string;               // Default: 'auto'
+  // Layout & OCR language detection are 100% automatic per ADR-019 (no manual sourceLang / reader_mode UI toggles)
   
   // Engine & Provider
   engine: 'auto' | 'local' | 'cloud'; // Default: 'auto'

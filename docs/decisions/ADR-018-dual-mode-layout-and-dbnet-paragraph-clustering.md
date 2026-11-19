@@ -1,6 +1,6 @@
 # ADR-018: Dual-Mode Layout Engine (Manga Comic Bubble vs. Web Prose/Novel Mode) with DBNet Paragraph Envelope Clustering
 
-- **Status:** Accepted
+- **Status:** Superseded by ADR-019
 - **Date:** 2026-11-02
 - **Decision-Maker:** Solo Developer (human)
 - **Consulted:** AI Agent
