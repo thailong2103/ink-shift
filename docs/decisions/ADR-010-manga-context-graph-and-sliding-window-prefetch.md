@@ -5,7 +5,7 @@
 - **Decision-Maker:** Solo Developer (@human)
 - **Consulted:** Antigravity AI Agent
 - **Related Spec:** [SPEC-manga-context-graph.md](../specs/SPEC-manga-context-graph.md)
-- **Research Sources:** [RESEARCH-mangadex-api-and-prefetch.md](../research/RESEARCH-mangadex-api-and-prefetch.md), [RESEARCH-manga-context-graph.md](../research/RESEARCH-manga-context-graph.md)
+- **Research Sources:** `RESEARCH-mangadex-api-and-prefetch.md`, `RESEARCH-manga-context-graph.md` *(archived)*
 
 ---
 

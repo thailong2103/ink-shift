@@ -1,8 +1,8 @@
 # Capability Map: InkShift — Manga Translation Engine
 
 > **Source:** [fisrt-ideal.md](../temp/fisrt-ideal.md) (Raw initial concept)  
-> **Status:** PROPOSED — Awaiting Developer Review & Approval (Verify)  
-> **Created:** 2026-10-09  
+> **Status:** Implemented (Modules 0–7 Completed; `web-reader` Deferred)  
+> **Created:** 2026-10-09 | **Last Synced:** 2026-11-19 (Phase 47)  
 > **Standard:** Phase 0 (Scope Check & Capability Map) — `spec-driven-development`  
 > **Language Policy:** Official English document tracked in Git. Parallel Vietnamese copy at [CAPABILITY_MAP.md](../vi/specs/CAPABILITY_MAP.md) (local, ignored via `.gitignore`).
 
@@ -10,22 +10,22 @@
 
 ## 1. Decomposition Objective
 
-Deconstruct the raw product vision ([fisrt-ideal.md](../temp/fisrt-ideal.md)) into **6 independent functional modules**. Each module represents a distinct capability with clear boundaries, independently testable contracts, and dedicated technical decisions to be made by the developer before implementation.
+Deconstruct the raw product vision ([fisrt-ideal.md](../temp/fisrt-ideal.md)) into **8 functional modules (7 implemented + 1 deferred)**. Each module represents a distinct capability with clear boundaries, independently testable contracts, and dedicated technical decisions approved by the developer.
 
 ---
 
-## 2. Seven Functional Modules
+## 2. Eight Functional Modules (7 Implemented + 1 Deferred)
 
 | Module ID | Module Name | Core Responsibility | Depends on |
 |---|---|---|---|
 | `api-contract` | API Contract & Data Schemas | Canonical interface definition (Pydantic request/response models, normalized `[0–1000]` coordinate system, error codes, status enums) between Chrome Extension ↔ FastAPI Backend. Serves as the immutable boundary contract. | *(None — Root Foundation)* |
-| `backend-engine` | Backend Runtime & Engine Coordinator | FastAPI web server, pluggable engine loader interface (`BaseTranslationEngine`), SQLite translation caching layer, dual-engine orchestrator (Cloud & Local), `/api/v1/*` endpoints. | `api-contract` |
-| `cloud-engine` | Cloud Vision Turbo Provider | Engine implementation integrating Vision LLMs (Gemini 2.0 Flash / OpenAI Vision). Ingests image $\rightarrow$ outputs bounding boxes + contextual Vietnamese translation in a single round-trip. | `api-contract`, `backend-engine` |
-| `local-engine` | Local Offline Pipeline Provider | 100% on-device offline engine: Text Bubble Detector $\rightarrow$ Dual OCR (Single-Pass Full-Page RapidOCR for Non-JA / Crop MangaOCR for Japanese) $\rightarrow$ Translation (Free Google Translate API / Local Model). Forever free, zero external API costs. | `api-contract`, `backend-engine` |
-| `extension-core` | Chrome Extension (Manifest V3) | Manga image extraction from DOM, CORS bypass via Service Worker, **Shadow DOM Overlay** renderer (CSS-isolated), coordinate scaling engine, `ResizeObserver` drift mitigation, popup UI, and shortcuts. | `api-contract` |
-| `manga-context-graph` | Context Graph & In-Memory Prefetch | Relational reading context (`manga_series`, `manga_chapters`, `chapter_pages`), MangaDex At-Home direct manifest extractor, singleflight request deduplication, and sliding window prefetch scheduler for zero-wait reading. | `api-contract`, `backend-engine`, `extension-core` |
+| `backend-engine` | Backend Runtime & Engine Coordinator | FastAPI web server, pluggable engine loader interface (`BaseTranslationEngine`), 5-column SQLite translation cache with `is_fallback` zero-poisoning, `PriorityLocalLock` scheduler, `/api/v1/*` endpoints. | `api-contract` |
+| `cloud-engine` | Cloud Vision Turbo Provider | Engine implementation integrating Vision LLMs (Google Gemini, OpenAI, Anthropic, Custom OpenAI-compatible) via `ProviderRegistry` with Set-of-Marks visual grounding, `safe_mask`, and `custom_prompt`. | `api-contract`, `backend-engine` |
+| `local-engine` | Local Offline Pipeline Provider | 100% on-device hybrid layout & OCR pipeline: `YOLO11s-seg` + `PP-OCRv6_medium` DirectML (lazy `korean_PP-OCRv5_rec_mobile` fallback, 2D Union-Find residual clustering, panel/bubble barriers, IoMin SFX exclusion) $\rightarrow$ Translation (`GoogleFreeTranslator` / `LLMTextTranslator`). | `api-contract`, `backend-engine` |
+| `extension-core` | Chrome Extension (Manifest V3) | Manga image extraction from DOM, modular `SiteAdapterRegistry` (`MangaDex`, `Hitomi`), CORS/DNR bypass via Service Worker, **Shadow DOM Overlay** renderer (CSS-isolated), coordinate scaling engine, Bento Popup UI, Mascot HUD, and shortcuts. | `api-contract` |
+| `manga-context-graph` | Context Graph & In-Memory Prefetch | Relational reading context (`manga_series`, `manga_chapters`, `chapter_pages`), manifest extractors, client/backend singleflight deduplication, `PriorityLocalLock` (`P0` LIFO preemption), `CANCEL_PENDING_TRANSLATIONS`, and sliding window prefetch scheduler. | `api-contract`, `backend-engine`, `extension-core` |
 | `dynamic-llm-hub` | Dynamic LLM Provider Hub | 4-Tier Provider Management (Google, OpenAI, Anthropic, Custom), zero-hardcoding live catalog discovery proxy, mode-aware multimodal vision filtering, atomic `.env` single source of truth, and searchable combobox with single-model persistence. | `api-contract`, `backend-engine`, `cloud-engine`, `extension-core` |
-| `web-reader` | Local Web Reader (Zen Reader) | Dedicated local reader UI (`localhost:8000/reader`) serving as fallback when websites employ canvas scrambling, WebGL tiles, or anti-inspect guards. Allows custom fonts, sizing, and backend settings. | `api-contract`, `backend-engine`, `manga-context-graph` |
+| `web-reader` *(Deferred)* | Local Web Reader (Zen Reader) | Dedicated local reader UI (`localhost:8000/reader`) planned as fallback when websites employ canvas scrambling, WebGL tiles, or anti-inspect guards. | `api-contract`, `backend-engine`, `manga-context-graph` |
 
 ---
 
@@ -59,8 +59,8 @@ graph TD
     style CE fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px
     style LE fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px
     style EX fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px
-    style CG fill:#fff3e0,stroke:#e65100,stroke-width:2px
-    style DH fill:#e1f5fe,stroke:#0288d1,stroke-width:2px
+    style CG fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px
+    style DH fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px
     style WR fill:#f5f5f5,stroke:#9e9e9e,stroke-dasharray: 5 5
 ```
 
@@ -97,9 +97,11 @@ Each module requires an independent specification (`SPEC-{module-id}.md`) and ar
 | `api-contract` | - Coordinate format: Integer `0–1000` vs. float `0.0–1.0`?<br>- Image transport: Base64 string in JSON body vs. Binary Multipart Form-Data?<br>- Streaming protocol: Server-Sent Events (SSE) for streaming bubbles vs. batch JSON? | `ADR-002` |
 | `backend-engine` | - Python runtime: 3.11 vs. 3.12?<br>- Dependency manager: `uv` vs. `poetry` vs. `pip` + `requirements.txt`?<br>- SQLite persistence: SQLModel, async SQLAlchemy, or raw `sqlite3`?<br>- Engine loader pattern: Dynamic plugin factory vs. Dependency Injection? | `ADR-003` |
 | `cloud-engine` | - Primary model: Gemini 2.0 Flash vs. 1.5 Flash vs. OpenAI GPT-4o-mini?<br>- Client library: `google-genai` official SDK vs. raw HTTP client (`httpx`)?<br>- Prompt strategy: Structured Outputs (JSON Schema) vs. markdown extraction?<br>- Retry policy: Exponential backoff on rate limits (429)? | `ADR-004` |
-| `local-engine` | - Text Bubble Detector: YOLOv8-manga vs. CRAFT vs. Comic-Text-Detector (ONNX runtime)?<br>- OCR model: `manga-ocr` (PyTorch) vs. PaddleOCR (multilingual)?<br>- Translation engine: `deep-translator` (Google Translate free) vs. local LLM via Ollama?<br>- Hardware target: CPU-only baseline vs. CUDA acceleration? | `ADR-005` |
-| `extension-core` | - Build toolchain: Vite + TypeScript vs. Vanilla JavaScript?<br>- Popup UI: Vanilla HTML/CSS vs. Preact/Tailwind?<br>- Coordinate scaling: Aspect ratio letterbox compensation for `object-fit: contain`.<br>- Messaging: `chrome.runtime.sendMessage` between Content Script and Service Worker. | `ADR-006` |
-| `web-reader` | - Frontend tech: Server-side rendered (Jinja2 + Vanilla JS) vs. Static SPA (Vite)?<br>- Scramble extraction strategy: Blob forwarding vs. `chrome.tabs.captureVisibleTab`? | `ADR-007` |
+| `local-engine` | - Text Bubble & Layout Detector: `YOLO11s-seg` ONNX DirectML (Option G1 Gateway)<br>- OCR Model: Single-pass `PP-OCRv6_medium` (`rapidocr>=3.9.1`) + lazy `korean_PP-OCRv5_rec_mobile` + 2D Union-Find residual clustering<br>- Translation Engine: `google-free` (`deep-translator`) or `LLMTextTranslator` with JSON repair<br>- Hardware Target: DirectML GPU primary + `CPUExecutionProvider` fallback | `ADR-006`, `ADR-007`, `ADR-008`, `ADR-017`, `ADR-019`, `ADR-020` |
+| `extension-core` | - Build Toolchain: Vite + TypeScript MV3<br>- Popup UI: Bento UI + Mascot HUD (Vanilla HTML/CSS + Constructable Stylesheets)<br>- Site Adapters: `SiteAdapterRegistry` (`MangaDexAdapter`, `HitomiAdapter`)<br>- Coordinate Scaling: Letterbox compensation (`object-fit: contain`) + responsive rescaling | `ADR-005`, `ADR-009`, `ADR-013`, `ADR-014`, `ADR-015`, `ADR-016`, `ADR-020` |
+| `manga-context-graph` | - Context DB: SQLite (`manga_series`, `manga_chapters`, `chapter_pages`)<br>- Priority Lock & Cancellation: `PriorityLocalLock` (`P0` LIFO preemption) + `CANCEL_PENDING_TRANSLATIONS` | `ADR-010`, `ADR-020` |
+| `dynamic-llm-hub` | - Live Catalog Proxy: 4-tier discovery + atomic `.env` persistence | `ADR-012`, `ADR-020` |
+| `web-reader` | - Standalone Zen Reader UI fallback (Deferred post-MVP) | *(Deferred)* |
 
 ---
 

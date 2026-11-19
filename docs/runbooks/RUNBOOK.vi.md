@@ -10,15 +10,15 @@
 
 Đảm bảo các thành phần nền tảng đã sẵn sàng trước khi chạy:
 
-1. **Trọng số mô hình nhận diện (Model Weights):**
-   - Vị trí tệp: `.cache/inkshift/models/yolo11s-seg.onnx` (~25 MB).
-   - **Tự động tải:** Máy chủ backend tự động tải tệp từ Hugging Face khi khởi động nếu bật `INKSHIFT_AUTO_DOWNLOAD_MODELS=true`.
+1. **Trọng số mô hình nhận diện (`.cache/inkshift/models/`):**
+   - `yolo11s-seg.onnx` (~39.3 MB từ Hugging Face), `PP-OCRv6_det_medium.onnx` (~62.1 MB từ ModelScope), `PP-OCRv6_rec_medium.onnx` (~76.6 MB từ ModelScope), và tùy chọn `korean_PP-OCRv5_rec_mobile.onnx` (~13.5 MB, tải lười khi gặp manhwa tiếng Hàn).
+   - **Tự động tải:** Máy chủ backend tự động tải tệp còn thiếu khi bật `INKSHIFT_AUTO_DOWNLOAD_MODELS=true`.
    - Hoặc tải thủ công trước qua lệnh:
      ```powershell
      python scripts/download_models.py
      ```
 2. **Các gói thư viện Python:**
-   - Đảm bảo các gói `onnxruntime-directml`, `rapidocr-onnxruntime`, `fastapi`, `httpx` đã được cài đặt trong môi trường ảo.
+   - Đảm bảo các gói `onnxruntime-directml`, `rapidocr>=3.9.1`, `fastapi`, `httpx` đã được cài đặt trong môi trường ảo.
 3. **Bản dựng tiện ích mở rộng (Extension Bundle):**
    - Thư mục `dist/` đã được biên dịch hoàn chỉnh qua lệnh:
      ```powershell
@@ -123,14 +123,14 @@ Quan sát terminal backend và giao diện trang đọc để nghiệm thu:
      RequestReceived: engine=local, target=vi, size_kb=2463.3
      StageStarted: stage=1/4, action="DecodeImageAndValidate"
      StageCompleted: stage=1/4, elapsed_ms=63.6
-     StageStarted: stage=3/4, action="OCRRecognition (mode=en)"
-     RapidOCR full-page completed: 29 text elements mapped to 7 bubbles in 1354.41ms (valid=6/7)
-     StageStarted: stage=4/4, action="BatchTranslate (6 blocks -> vi via google-free)"
-     StageCompleted: stage=4/4, elapsed_ms=3905.0
-     PipelineCompleted: engine=local, elapsed_ms=5348, blocks=6
+     StageStarted: stage=3/4, action="HybridOCR (mode=auto)"
+     StageCompleted: stage=3/4, elapsed_ms=890.0, adapter=rapidocr, lang=ja, bubbles=7/7, residual=1
+     StageStarted: stage=4/4, action="BatchTranslate (8 blocks [ja->vi] via google-free)"
+     StageCompleted: stage=4/4, elapsed_ms=390.0
+     PipelineCompleted: engine=local, elapsed_ms=1380, blocks=8
      ```
-   - Chế độ `local` (Non-JA): RapidOCR tự động quét một lượt toàn trang mà không cần cắt từng ô nhỏ.
-   - Chế độ `cloud`: Cơ chế trực quan vẽ Set-of-Marks và tự động thử lại khi gặp lỗi HTTP 429/503.
+   - Chế độ `local`: Hệ thống Hybrid thống nhất (`YOLO11s-seg` + `PP-OCRv6_medium` DirectML + fallback tiếng Hàn) tự động nhận diện ngôn ngữ (`ja`/`zh`/`ko`/`en`) và chiều dọc/ngang hoàn toàn tự động.
+   - Chế độ `cloud`: Cơ chế trực quan vẽ Set-of-Marks (hỗ trợ `safe_mask`) và tự động thử lại khi gặp lỗi HTTP 429/503.
 
 2. **Nhật Ký Tiện Ích Trình Duyệt (`data/logs/extension.log`):**
    - Mở tệp nhật ký để theo dõi tiến trình tải trước ngầm:
@@ -148,7 +148,7 @@ Quan sát terminal backend và giao diện trang đọc để nghiệm thu:
 
 | Tình trạng | Nguyên nhân có thể | Cách giải quyết |
 |---|---|---|
-| Huy hiệu hiển thị **Offline** | Máy chủ backend chưa chạy hoặc bị chặn cổng 8000 | Chạy lại lệnh uvicorn hoặc `start.bat`. Đảm bảo địa chỉ `http://127.0.0.1:8000/api/v1/cache/stats` mở được trên trình duyệt. |
+| Huy hiệu hiển thị **Offline** | Máy chủ backend chưa chạy hoặc bị chặn cổng 8000 | Chạy lại lệnh uvicorn hoặc `start.bat`. Đảm bảo địa chỉ `http://127.0.0.1:8000/api/v1/health` mở được trên trình duyệt. |
 | Không quét được ảnh trên `file:///` | Chưa bật quyền truy cập tệp cục bộ | Vào `chrome://extensions/` -> Chi tiết InkShift -> Bật **Cho phép truy cập vào các URL của tệp**. |
-| Lỗi thiếu trọng số mô hình | Tệp `yolo11s-seg.onnx` chưa được tải đủ | Chạy lệnh `python scripts/download_models.py --force`. |
+| Lỗi thiếu trọng số mô hình | Tệp `yolo11s-seg.onnx` hoặc `PP-OCRv6_*_medium.onnx` chưa được tải đủ | Chạy lệnh `python scripts/download_models.py --force`. |
 | Giao diện tiện ích không cập nhật | Trình duyệt đang lưu đệm bản dựng cũ | Bấm nút mũi tên xoay tròn **Tải lại (Reload)** trên thẻ InkShift trong `chrome://extensions/`. |

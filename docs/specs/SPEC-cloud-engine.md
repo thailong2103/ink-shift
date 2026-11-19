@@ -1,26 +1,25 @@
 # Spec: Cloud Vision Turbo Provider (`cloud-engine`)
 
 > **Module ID:** `cloud-engine`  
-> **Module ID:** `cloud-engine`  
-> **Source ADR:** [ADR-004-cloud-engine-architecture.md](../decisions/ADR-004-cloud-engine-architecture.md), [ADR-007-yolo11-manga-detection-and-visual-grounding.md](../decisions/ADR-007-yolo11-manga-detection-and-visual-grounding.md), [ADR-008-consolidated-engine-architecture-and-shared-detection.md](../decisions/ADR-008-consolidated-engine-architecture-and-shared-detection.md)  
+> **Source ADR:** [ADR-004-cloud-engine-architecture.md](../decisions/ADR-004-cloud-engine-architecture.md), [ADR-007-yolo11-manga-detection-and-visual-grounding.md](../decisions/ADR-007-yolo11-manga-detection-and-visual-grounding.md), [ADR-008-consolidated-engine-architecture-and-shared-detection.md](../decisions/ADR-008-consolidated-engine-architecture-and-shared-detection.md), [ADR-012-dynamic-llm-provider-hub.md](../decisions/ADR-012-dynamic-llm-provider-hub.md), [ADR-020-resilient-cache-site-adapters-priority-queue-and-llm-repair.md](../decisions/ADR-020-resilient-cache-site-adapters-priority-queue-and-llm-repair.md)  
 > **Parent Map:** [CAPABILITY_MAP.md](CAPABILITY_MAP.md)  
 > **Contract Spec:** [SPEC-api-contract.md](SPEC-api-contract.md)  
 > **Backend Spec:** [SPEC-backend-engine.md](SPEC-backend-engine.md)  
-> **Status:** Approved by Solo Developer (@human)  
-> **Phase:** Module 3 Execution Runtime (Universal Set-of-Marks & ProviderRegistry)  
+> **Status:** Implemented (Synced through Phase 47) — Approved by Solo Developer (@human)  
+> **Phase:** Module 3 Execution Runtime & Phases 15–47 Hardening  
 > **Quality Gate:** [CONSTRAINTS.md](../../CONSTRAINTS.md) (Zero suppressions, strict types, coverage $\ge 80\%$)  
-> **Language Policy:** Official English document tracked in Git. Parallel Vietnamese copy at [docs/vi/specs/SPEC-cloud-engine.md](../vi/specs/SPEC-cloud-engine.md).  
+> **Language Policy:** Official English document tracked in Git.
 
 ---
 
 ## 1. Assumptions Surface
 
 Before proceeding to implementation, the following architectural assumptions are recorded:
-1. **Credentials Management:** API keys (`GEMINI_API_KEY`, `OPENAI_API_KEY`) and active provider choices are loaded via environment variables / `.env`.
-2. **Primary Provider:** Google AI Studio utilizing `gemini-2.5-flash` is the default provider due to ultra-low latency and multimodal reasoning.
-3. **Set-of-Marks (SoM) Visual Grounding:** Rather than forcing Cloud LLMs to predict spatial coordinates, the API gateway executes shared YOLO11s-seg locally (~80ms), draws sequential numerical markers (`[1], [2], [3]...`) onto speech balloons, and sends the annotated image. The Cloud LLM translates dialogue indexed by marker ID.
+1. **Credentials Management:** API keys (`GEMINI_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `CUSTOM_API_KEY`) and active provider choices are loaded via environment variables / `.env`.
+2. **Primary Provider:** Google AI Studio utilizing `gemini-2.0-flash` (overridable via `GEMINI_MODEL` or dynamic UI combobox `request.model`) is the configured default provider due to ultra-low latency and multimodal reasoning.
+3. **Set-of-Marks (SoM) Visual Grounding & Safe-Mask Recovery:** Rather than forcing Cloud LLMs to predict spatial coordinates, the API gateway executes shared YOLO11s-seg locally, draws sequential numerical markers (`[1], [2], [3]...`) onto speech balloons, and sends the annotated image. When `safe_mask=True` (or auto-recovered upon `ContentSafetyBlockedError`), `create_masked_canvas()` strips non-text background artwork onto a clean white canvas before redrawing badges.
 4. **Zero-Bubble Optimization:** If the page contains 0 speech bubbles, cloud translation exits immediately with an empty block list, consuming **0 tokens, 0 network requests, and 0 latency**.
-5. **Universal Provider Parity:** Both Gemini and OpenAI-compatible providers share the same visual grounding and flat JSON prompt format.
+5. **Universal Provider Parity & Custom Prompting:** Google Gemini, OpenAI, Anthropic Claude, and Custom OpenAI-compatible providers share the same visual grounding (`draw_set_of_marks`) and flat JSON prompt builder (`get_som_system_prompt(target_lang, custom_prompt)`).
 6. **Zero New SDK Dependencies:** All upstream requests are executed via `httpx.AsyncClient` already installed in `src/backend`.
 
 ---
@@ -37,11 +36,12 @@ Implement the Cloud Vision Turbo Provider (`cloud-engine`) using **Set-of-Marks 
    ```
    Eliminates coordinate prediction completely, cutting output tokens by 90% and latency from 15s to ~1s.
 3. **100% Coordinate Fidelity:** Zero bounding box drift or hallucinated coordinates since spatial geometry comes directly from hardware-accelerated YOLO11 segmentation.
-4. **Dynamic ProviderRegistry:**
-   - `GeminiProvider`: Google AI Studio REST endpoint (`v1beta/models/{model}:generateContent`) with `responseMimeType: "application/json"`.
-   - `OpenAICompatProvider`: Universal OpenAI `/chat/completions` gateway (targeting xKiro, DeepSeek, OpenRouter, or local Ollama).
-5. **Single Canonical Engine Registration:** Registered in backend as canonical `"cloud"`, resolving provider dynamically from request payload `provider: "gemini" | "openai"`.
-6. **Resilience & Rate-Limit Defense:** Automated exponential backoff with jitter on HTTP 429 ($\le 2$ retries), 15-second hard timeout, and graceful handling of empty images.
+4. **Dynamic ProviderRegistry (`ProviderRegistry`):**
+   - `GeminiProvider`: Google AI Studio REST endpoint (`v1beta/models/{model}:generateContent`, default `gemini-2.0-flash`).
+   - `OpenAICompatibleProvider`: Universal OpenAI `/chat/completions` gateway (`openai` default `gpt-4o-mini`, or `custom`/`xkiro` proxies).
+   - `AnthropicProvider`: Anthropic Messages API (`anthropic`, default `claude-3-5-sonnet-20241022`).
+5. **Single Canonical Engine Registration:** Registered in backend as canonical `"cloud"`, resolving provider dynamically from request payload `provider: "google" | "gemini" | "openai" | "anthropic" | "custom" | "xkiro"`.
+6. **Resilience, Rate-Limit Defense & Safe-Mask Recovery:** Automated exponential backoff with jitter on HTTP 429 ($\le 2$ retries), explicit `httpx` timeouts, automatic `create_masked_canvas()` retry on `CONTENT_SAFETY_BLOCKED` when `safe_mask` is `None`, and optional `custom_prompt` style instructions.
 
 ---
 
@@ -76,20 +76,22 @@ src/backend/
 │   ├── base.py                     # BaseTranslationEngine (from Module 2)
 │   ├── registry.py                 # EngineRegistry (from Module 2)
 │   └── cloud/
-│       ├── __init__.py             # Exports CloudTranslationEngine, GeminiProvider, OpenAICompatProvider
-│       ├── engine.py               # CloudTranslationEngine (delegates to ProviderRegistry)
+│       ├── __init__.py             # Exports CloudTranslationEngine, GeminiProvider, OpenAICompatibleProvider, AnthropicProvider, ProviderRegistry
+│       ├── engine.py               # CloudTranslationEngine (delegates to ProviderRegistry + safe_mask retry)
 │       ├── provider.py             # CloudProvider Protocol definition
-│       ├── provider_registry.py    # Dynamic ProviderRegistry (gemini, openai)
-│       ├── visual_grounding.py     # Set-of-Marks image markup & badge drawing
-│       ├── prompts.py              # Manga localization system instructions & JSON Schema specs
+│       ├── provider_registry.py    # Dynamic ProviderRegistry (google/gemini, openai, anthropic, custom/xkiro)
+│       ├── visual_grounding.py     # Set-of-Marks image markup, create_masked_canvas, badge drawing
+│       ├── prompts.py              # get_som_system_prompt(target_lang, custom_prompt)
 │       ├── gemini.py               # GeminiProvider (Google AI Studio REST implementation)
-│       ├── openai_compat.py        # OpenAICompatProvider (OpenAI wire format with SoM)
+│       ├── openai_compat.py        # OpenAICompatibleProvider (OpenAI wire format with SoM)
+│       ├── anthropic.py            # AnthropicProvider (Claude Messages vision implementation)
 │       └── exceptions.py           # Structured cloud engine error hierarchy
 
 tests/backend/engines/
-├── test_cloud.py                   # Comprehensive unit tests for Cloud providers, 429 retry, SoM flow
+├── test_cloud.py                   # Comprehensive unit tests for Cloud providers, 429 retry, SoM & safe_mask flow
 └── cloud/
-    ├── test_openai_compat.py       # OpenAICompatProvider unit tests and error handling
+    ├── test_anthropic.py           # AnthropicProvider unit tests
+    ├── test_openai_compat.py       # OpenAICompatibleProvider unit tests and error handling
     └── test_provider_registry.py   # Dynamic provider resolution and registration tests
 ```
 
@@ -105,16 +107,16 @@ from src.backend.schemas.contract import TranslatedBlock
 
 @runtime_checkable
 class CloudProvider(Protocol):
-    """Protocol for concrete cloud vision providers (Gemini, xKiro/OpenAI)."""
+    """Protocol for concrete cloud vision providers (Gemini, OpenAI, Anthropic, Custom)."""
 
     @property
     def name(self) -> str:
-        """Provider identifier (e.g. 'gemini', 'xkiro')."""
+        """Provider identifier (e.g. 'gemini', 'openai', 'anthropic', 'custom')."""
         ...
 
     @property
     def default_model(self) -> str:
-        """Default model identifier (e.g. 'gemini-3.8-flash', 'qwen/qwen3.8-max')."""
+        """Default model identifier (e.g. 'gemini-2.0-flash', 'gpt-4o-mini', 'claude-3-5-sonnet-20241022')."""
         ...
 
     async def is_available(self) -> bool:
@@ -126,73 +128,44 @@ class CloudProvider(Protocol):
         image_base64: str,
         target_lang: str = "vi",
         model: str | None = None,
+        custom_prompt: str | None = None,
     ) -> list[TranslatedBlock]:
         """Execute single-pass vision translation and return structured blocks."""
         ...
 ```
 
 ### 5.2 Composite Engine (`src/backend/engines/cloud/engine.py`)
-`CloudTranslationEngine` implements `BaseTranslationEngine`. It extracts raw base64 data, delegates to the active `CloudProvider`, records execution latency, and constructs a canonical `TranslationResponse`:
+`CloudTranslationEngine` delegates via `ProviderRegistry`, forwards `custom_prompt` and Set-of-Marks `work_items`, and supports explicit or automatic `safe_mask` background masking upon safety refusal:
 
 ```python
-import time
-from src.backend.engines.base import BaseTranslationEngine
-from src.backend.engines.cloud.provider import CloudProvider
-from src.backend.schemas.contract import TranslationRequest, TranslationResponse
-
-
 class CloudTranslationEngine(BaseTranslationEngine):
-    """Composite translation engine delegating to an active CloudProvider."""
+    """Composite translation engine delegating to an active CloudProvider via ProviderRegistry."""
 
-    def __init__(self, provider: CloudProvider) -> None:
-        self._provider = provider
+    def __init__(
+        self,
+        registry: ProviderRegistry | None = None,
+        provider: CloudProvider | None = None,
+        name: str = "cloud",
+    ) -> None:
+        ...
 
     @property
     def name(self) -> str:
-        return f"cloud:{self._provider.name}"
+        return self._name
 
-    async def is_available(self) -> bool:
-        return await self._provider.is_available()
-
-    async def translate(self, request: TranslationRequest) -> TranslationResponse:
-        start_time = time.perf_counter()
-        
-        # Clean data URL prefix if present
-        raw_b64 = request.image
-        if "," in raw_b64:
-            raw_b64 = raw_b64.split(",", 1)[1]
-
-        blocks = await self._provider.translate_page(
-            image_base64=raw_b64,
-            target_lang=request.target_lang,
-        )
-
-        latency_ms = int((time.perf_counter() - start_time) * 1000)
-        return TranslationResponse(
-            success=True,
-            page_hash=request.image_hash or "0" * 64,
-            engine_used=self.name,
-            execution_time_ms=latency_ms,
-            from_cache=False,
-            blocks=blocks,
-        )
+    async def translate(
+        self,
+        request: TranslationRequest,
+        bubbles: list[DetectedBubble] | None = None,
+    ) -> TranslationResponse:
+        ...
 ```
 
-### 5.3 Manga Localization Prompt (`src/backend/engines/cloud/prompts.py`)
-Prompting is tuned specifically for manga layout understanding:
-
+### 5.3 Set-of-Marks Prompt (`src/backend/engines/cloud/prompts.py`)
 ```python
-MANGA_SYSTEM_PROMPT = """You are an expert manga localizer and translator.
-Analyze the provided manga page image:
-1. Detect all dialogue speech bubbles, narrative captions, and significant sound effects (SFX).
-2. For each detected text block, extract:
-   - box_2d: Normalized bounding box [ymin, xmin, ymax, xmax] as integers between 0 and 1000.
-   - source_text: Raw transcription of the original text.
-   - translated_text: Natural, context-aware Vietnamese translation respecting manga tone, honorifics, and character dynamics.
-   - direction: 'vertical' (for traditional Japanese RTL columns) or 'horizontal'.
-3. Follow the natural Japanese manga reading order (Right-to-Left, Top-to-Bottom).
-4. Output strictly a JSON array conforming to the specified schema. If the page contains no text, output an empty array [].
-"""
+def get_som_system_prompt(target_lang: str = "vi", custom_prompt: str | None = None) -> str:
+    """Generate flat JSON dictionary prompt mapping sequential badge IDs [1], [2], ... to translations."""
+    ...
 ```
 
 ---
@@ -237,14 +210,14 @@ The engine intercepts network exceptions and model failure modes, mapping them s
 
 ## 9. Success Criteria
 
-- [ ] **SC-1:** `GeminiProvider` connects to Google AI Studio REST API using `gemini-3.8-flash` and extracts valid `TranslatedBlock` objects with coordinates in `[0, 1000]`.
-- [ ] **SC-2:** `OpenAICompatibleProvider` connects to xKiro/OpenAI endpoints using `qwen/qwen3.8-max` and parses JSON output defensively.
-- [ ] **SC-3:** `CloudTranslationEngine` integrates seamlessly with `EngineRegistry` and responds to `POST /api/v1/translate` with `engine="cloud"`.
-- [ ] **SC-4:** Rate-limited requests (HTTP 429) automatically retry with exponential backoff and jitter.
-- [ ] **SC-5:** Safety policy blocks (`finishReason: "SAFETY"`) return structured `CONTENT_SAFETY_BLOCKED` without crashing.
-- [ ] **SC-6:** Zero type errors under `mypy src/backend --strict`.
-- [ ] **SC-7:** Zero lint violations under `ruff check src/backend`.
-- [ ] **SC-8:** Test coverage across new cloud engine code satisfies $\ge 80\%$ per `CONSTRAINTS.md`.
+- [x] **SC-1:** `GeminiProvider` connects to Google AI Studio REST API using configured Gemini model and extracts valid `TranslatedBlock` objects with coordinates in `[0, 1000]`.
+- [x] **SC-2:** `OpenAICompatibleProvider` and `AnthropicProvider` connect cleanly with Set-of-Marks visual grounding and defensive JSON parsing.
+- [x] **SC-3:** `CloudTranslationEngine` integrates seamlessly with `EngineRegistry` and responds to `POST /api/v1/translate` with `engine="cloud"`.
+- [x] **SC-4:** Rate-limited requests (HTTP 429) automatically retry with exponential backoff and jitter.
+- [x] **SC-5:** Safety policy blocks (`finishReason: "SAFETY"`) recover via `safe_mask` background masking or return structured `CONTENT_SAFETY_BLOCKED` without crashing.
+- [x] **SC-6:** Zero type errors under `mypy src/backend --strict`.
+- [x] **SC-7:** Zero lint violations under `ruff check src/backend`.
+- [x] **SC-8:** Test coverage across cloud engine code satisfies $\ge 80\%$ per `CONSTRAINTS.md`.
 
 ---
 

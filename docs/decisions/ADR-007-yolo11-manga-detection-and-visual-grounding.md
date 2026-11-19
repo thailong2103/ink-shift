@@ -14,7 +14,7 @@
 
 ## 1. Context & Problem Statement
 
-Following the initial delivery of Module 5 (`local-engine`) and live browser extension testing, an empirical audit and benchmark on real-world manga panels ([RESEARCH-manga-detector-yolo11.md](../research/RESEARCH-manga-detector-yolo11.md)) revealed critical bottlenecks across both local and cloud pipelines:
+Following the initial delivery of Module 5 (`local-engine`) and live browser extension testing, an empirical audit and benchmark on real-world manga panels (archived research artifact `RESEARCH-manga-detector-yolo11.md`) revealed critical bottlenecks across both local and cloud pipelines:
 
 1. **Severe Dropout in Comic-Text-Detector:** The baseline detector missed **60%–82%** of dialogue balloons across complex manga panels. Being a text-only detector, it lacked speech balloon awareness, balloon contour segmentation, and character pointer (tail) preservation.
 2. **Artwork Occlusion from Rectangular Overlays:** Standard axis-aligned bounding boxes forced rectangular white overlays over curved speech balloons, occluding characters' faces, hair, and background screentones.

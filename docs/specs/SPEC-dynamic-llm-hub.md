@@ -1,15 +1,15 @@
 # Spec: Dynamic LLM Provider Hub (`dynamic-llm-hub`)
 
 > **Module ID:** `dynamic-llm-hub`  
-> **Source ADR:** [ADR-012-dynamic-llm-provider-hub.md](../decisions/ADR-012-dynamic-llm-provider-hub.md)  
+> **Source ADR:** [ADR-012-dynamic-llm-provider-hub.md](../decisions/ADR-012-dynamic-llm-provider-hub.md), [ADR-020-resilient-cache-site-adapters-priority-queue-and-llm-repair.md](../decisions/ADR-020-resilient-cache-site-adapters-priority-queue-and-llm-repair.md)  
 > **Parent Map:** [CAPABILITY_MAP.md](CAPABILITY_MAP.md)  
 > **Contract Spec:** [SPEC-api-contract.md](SPEC-api-contract.md)  
 > **Backend Spec:** [SPEC-backend-engine.md](SPEC-backend-engine.md), [SPEC-cloud-engine.md](SPEC-cloud-engine.md), [SPEC-local-engine.md](SPEC-local-engine.md)  
 > **Extension Spec:** [SPEC-extension-core.md](SPEC-extension-core.md)  
-> **Status:** APPROVED (Spec-Driven Development Phase 1)  
-> **Phase:** Phase 25 — Dynamic Multi-Provider Live Discovery & In-Extension Management  
+> **Status:** Implemented (Synced through Phase 47)  
+> **Phase:** Phase 25–45 — Dynamic Multi-Provider Live Discovery, Custom Prompts & Safe Masking  
 > **Quality Gate:** [CONSTRAINTS.md](../../CONSTRAINTS.md) (Zero suppressions, strict types, coverage $\ge 80\%$)  
-> **Language Policy:** Official English document tracked in Git. Parallel Vietnamese copy at [docs/vi/specs/SPEC-dynamic-llm-hub.md](../vi/specs/SPEC-dynamic-llm-hub.md).  
+> **Language Policy:** Official English document tracked in Git.
 
 ---
 
@@ -128,23 +128,20 @@ class TranslationRequest(BaseModel):
     )
     force_refresh: bool = Field(default=False)
     chapter_url: str | None = Field(default=None)
+    custom_prompt: str | None = Field(default=None)
+    safe_mask: bool | None = Field(default=None)
+    reader_mode: Literal["manga", "text"] = Field(default="manga")
+    priority: Literal["P0", "P1", "P2"] = Field(default="P0")
 
-    @field_validator("provider", mode="before")
+    @field_validator("provider", "translator", "model", mode="before")
     @classmethod
-    def normalize_provider(cls, v: Any) -> str | None:
-        if not v:
+    def normalize_empty_to_none(cls, v: Any) -> Any:
+        if v == "":
             return None
-        norm = str(v).strip().lower()
-        alias_map = {
-            "gemini": "google",
-            "cloud-gemini": "google",
-            "xkiro": "custom",
-            "cloud-xkiro": "custom",
-        }
-        return alias_map.get(norm, norm)
+        return v
 ```
 
-#### New Schemas in `src/backend/schemas/models.py`:
+#### Catalog Schemas in `src/backend/schemas/models.py`:
 ```python
 class ModelItem(BaseModel):
     id: str = Field(description="Unique model identifier (e.g. 'gemini-2.5-flash', 'gpt-4o')")
@@ -190,6 +187,10 @@ export interface TranslationRequest {
   model?: string; // Dynamic model selected via combobox
   force_refresh?: boolean;
   chapter_url?: string;
+  custom_prompt?: string;
+  safe_mask?: boolean;
+  reader_mode?: 'manga' | 'text';
+  priority?: 'P0' | 'P1' | 'P2';
 }
 
 export interface ModelItem {
@@ -339,10 +340,10 @@ python -m mypy src/backend tests/backend
 pytest tests/backend/test_models_api.py tests/backend/test_env_manager.py tests/backend/engines/cloud/test_anthropic.py -v
 
 # 3. Extension Lint & Typecheck
-npm run type-check
+npm run typecheck:extension
 
 # 4. Extension Unit Tests
-npm test -- tests/extension/test_popup.test.ts
+npm run test:extension -- tests/extension/test_popup.test.ts
 
 # 5. Full Project Fast Gate (Floor Guard 0 Suppressions)
 python scripts/check.py --fast
@@ -359,5 +360,5 @@ python scripts/check.py --fast
 
 - **Spec Author:** AI Assistant (Agentic Pair Programmer)
 - **Reviewer & Decision Authority:** Solo Developer (human)
-- **Associated ADR:** [docs/decisions/ADR-012-dynamic-llm-provider-hub.md](../decisions/ADR-012-dynamic-llm-provider-hub.md)
-- **Status:** **Ready for Human Sign-off**
+- **Associated ADR:** [docs/decisions/ADR-012-dynamic-llm-provider-hub.md](../decisions/ADR-012-dynamic-llm-provider-hub.md), [docs/decisions/ADR-020-resilient-cache-site-adapters-priority-queue-and-llm-repair.md](../decisions/ADR-020-resilient-cache-site-adapters-priority-queue-and-llm-repair.md)
+- **Status:** **Implemented (Verified through Phase 47)**

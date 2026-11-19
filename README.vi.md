@@ -44,30 +44,30 @@
 - **Mô hình cổng Option G1 Gateway**: Quá trình nhận diện bóng thoại chỉ chạy duy nhất một lần tại tầng Gateway. Tọa độ và đa giác bóng thoại được chia sẻ trực tiếp cho các engine dịch phía sau, loại bỏ hoàn toàn việc tính toán trùng lặp.
 
 ### 3. Kiến Trúc Hai Engine Độc Lập (Local Hybrid & Cloud Vision)
-- **Local Engine (Quy trình 2 giai đoạn tách rời — ADR-006, ADR-008, ADR-012)**:
-  - *Giai đoạn 1 (Nhận diện ký tự On-Device)*: `OCRRouter` tự động điều hướng tiếng Nhật dọc sang **MangaOCR** (~0.8-1.2s) và tiếng Anh/Latin/Trung sang **RapidOCR** (~80-120ms).
-  - *Giai đoạn 2 (Kho bộ chuyển ngữ Translator Registry)*: Quản lý 5 bộ chuyển ngữ linh hoạt:
+- **Local Engine (Quy trình Hybrid Thống Nhất — ADR-006, ADR-008, ADR-019, ADR-020)**:
+  - *Giai đoạn 1 (Nhận diện & Gom cụm On-Device)*: `OCRRouter.recognize_hybrid_page()` chạy 1 lượt **`PP-OCRv6_medium`** (`rapidocr>=3.9.1` DirectML) kết hợp mặt nạ bóng thoại/panel/SFX (`IoMin`) từ `YOLO11s-seg` trên cả tiếng Nhật (dọc/ngang), tiếng Trung và tiếng Anh, tự động fallback lười sang **`korean_PP-OCRv5_rec_mobile`** (lưu đệm theo chương) và gom cụm văn xuôi ngoài bóng thoại bằng **2D Union-Find** — tự động 100%, không cần chuyển chế độ hay ngôn ngữ thủ công.
+  - *Giai đoạn 2 (Kho bộ chuyển ngữ Translator Registry)*: Quản lý 5 bộ chuyển ngữ linh hoạt (hỗ trợ tách `<think>`, sửa lỗi JSON và căn chỉnh lại số lượng trên `LLMTextTranslator`, kèm cờ chống nhiễm độc cache `is_fallback`):
     1. `google-free`: Endpoint web miễn phí $0 (~150ms, không cần API key).
     2. `llm-google`: Dịch văn bản thuần qua Gemini (tiết kiệm hơn 90% token so với Vision).
     3. `llm-openai`: Dịch văn bản qua OpenAI GPT-4o-mini.
     4. `llm-anthropic`: Dịch văn bản qua Claude 3.5 Sonnet.
-    5. `llm-custom`: Tương thích chuẩn OpenAI với các máy chủ cục bộ hoặc proxy tự dựng (Ollama, vLLM, DeepSeek, Qwen).
-- **Cloud Vision Hub (ADR-004, ADR-012)**:
+    5. `llm-custom`: Tương thích chuẩn OpenAI với các máy chủ cục bộ hoặc proxy tự dựng (LM Studio, Ollama, vLLM, DeepSeek, Qwen) kèm `custom_prompt` không giới hạn độ dài.
+- **Cloud Vision Hub (ADR-004, ADR-012, ADR-020)**:
   - Hỗ trợ 4 nhà cung cấp: Google Gemini (REST), OpenAI (GPT-4o), Anthropic Claude và proxy tùy chỉnh tương thích OpenAI.
-  - Sử dụng cơ chế trực quan Set-of-Marks để xác định lời thoại nhân vật trực tiếp từ ảnh gốc.
+  - Sử dụng cơ chế Set-of-Marks kèm `custom_prompt` và tùy chọn che nền `safe_mask` giúp vượt bộ lọc kiểm duyệt khi cần.
 
-### 4. Tự Động Thích Ứng Bố Cục Trang Đọc
-- **Hỗ trợ đa dạng bố cục**: Tự động nhận diện chế độ xem từng trang đơn, trang đôi nằm ngang hoặc cuộn dọc dài (webtoon).
-- **Co giãn tỉ lệ động**: Lớp phủ tự động điều chỉnh tọa độ và kích thước khi trang truyện thay đổi độ thu phóng hoặc kích thước cửa sổ trình duyệt.
+### 4. Tự Động Thích Ứng Bố Cục & Modular Site Adapters
+- **Hỗ trợ đa dạng bố cục & SiteAdapterRegistry**: Tự động nhận diện trang đơn, trang đôi nằm ngang hoặc cuộn dọc dài (webtoon), cùng adapter chuyên biệt cho **MangaDex** (manifest + xử lý `blob:`) và **Hitomi.la** (`declarativeNetRequest` Referer, AVIF Anycast sharding, WebP failover).
+- **Hàng đợi ưu tiên & Hủy yêu cầu cũ**: `PriorityLocalLock` cho phép trang đang xem (`P0`) vượt trước hàng đợi prefetch (`P1`/`P2`), đồng thời hủy request lỗi thời qua `CANCEL_PENDING_TRANSLATIONS` và `is_disconnected()`.
 - **Bộ lọc tên miền linh hoạt**: Quản lý danh sách trang web được phép hoặc chặn dịch ngay trong giao diện tiện ích.
 
 ### 5. Linh Vật Đồng Hành HUD & Phím Tắt Nhanh
 - **Linh vật điều khiển trực quan**: Có thể kéo thả tự do trên màn hình, lưu vị trí cục bộ và có hiệu ứng nảy vật lý.
-- **Phản hồi trạng thái thời gian thực**: Linh vật biểu thị trạng thái hệ thống (`chờ`, `đang quét`, `đang dịch`, `thành công`, `lỗi`, `ngủ`).
+- **Phản hồi trạng thái thời gian thực**: Linh vật biểu thị trạng thái hệ thống (`idle`, `reading`, `scanning`, `translating`, `success`, `error`, `sleeping`).
 - **Phím tắt tiện dụng**: Bật/tắt nhanh bản dịch tức thì bằng phím <kbd>Alt</kbd> + <kbd>Z</kbd> hoặc ẩn/hiện linh vật bằng <kbd>Alt</kbd> + <kbd>M</kbd>.
 
-### 6. Bộ Nhớ Đệm SQLite Tổng Hợp Tốc Độ Cao
-- **Lưu đệm chế độ WAL**: Lưu trữ kết quả dịch theo khóa tổng hợp `(page_hash, engine, target_lang)`.
+### 6. Bộ Nhớ Đệm SQLite 5 Cột & Chống Nhiễm Độc Cache
+- **Lưu đệm khóa 5 cột & Chống nhiễm độc**: Lưu kết quả theo khóa tổng hợp `(image_hash, target_lang, engine_used, translator_used, prompt_hash)`, không lưu cache khi `is_fallback=true`, và cung cấp 2 nút xóa tách biệt (RAM trình duyệt vs SQLite DB qua `DELETE /api/v1/cache`).
 - **Xem lại không độ trễ**: Đọc lại các chương truyện đã từng dịch chỉ mất `< 5ms` trực tiếp từ SQLite cục bộ, không cần gọi lại OCR hay tốn thêm chi phí API.
 
 ---
@@ -83,25 +83,25 @@ flowchart TD
     end
 
     subgraph Extension["TIỆN ÍCH TRÌNH DUYỆT (Chromium MV3)"]
-        CS["Content Script<br/>(Theo Dõi Bố Cục & Căn Chỉnh Phông Chữ)"]
-        SW["Background Service Worker<br/>(Điều Phối Tin Nhắn & Quản Lý Phiên)"]
+        CS["Content Script<br/>(SiteAdapters, Observers & Căn Phông Chữ)"]
+        SW["Background Service Worker<br/>(Singleflight, DNR Referer & Hủy Tác Vụ)"]
     end
 
     subgraph Gateway["FASTAPI BACKEND GATEWAY (http://127.0.0.1:8000)"]
-        Detector["YOLO11s-seg ONNX<br/>(DirectML GPU AMD / NVIDIA / Intel)"]
+        Detector["YOLO11s-seg ONNX (PriorityLocalLock)<br/>(DirectML GPU AMD / NVIDIA / Intel)"]
         Registry["Engine Registry"]
         
-        subgraph BranchA["Nhánh A: Local Engine (2 Giai Đoạn Tách Rời)"]
-            OCR["OCR Router<br/>├─ MangaOCR (Tiếng Nhật Dọc/Kanji)<br/>└─ RapidOCR (Tiếng Anh/Latin/Trung)"]
-            Translator["Translator Registry<br/>├─ google-free (Web ~150ms)<br/>├─ llm-google (Gemini Text thuần)<br/>├─ llm-openai (GPT-4o-mini Text)<br/>├─ llm-anthropic (Claude Text)<br/>└─ llm-custom (Ollama / vLLM / Qwen)"]
+        subgraph BranchA["Nhánh A: Local Engine (Hybrid Thống Nhất)"]
+            OCR["OCR Router<br/>├─ PP-OCRv6_medium DirectML (ZH/JA/EN + 2D Union-Find)<br/>└─ Lazy korean_PP-OCRv5_rec_mobile Fallback"]
+            Translator["Translator Registry<br/>├─ google-free (Web ~150ms)<br/>├─ llm-google (Gemini Text thuần)<br/>├─ llm-openai (GPT-4o-mini Text)<br/>├─ llm-anthropic (Claude Text)<br/>└─ llm-custom (LM Studio / Ollama / Qwen)"]
             OCR --> Translator
         end
 
         subgraph BranchB["Nhánh B: Cloud Vision Hub"]
-            ProviderReg["Provider Registry (Set-of-Marks Vision)<br/>├─ Google Gemini (REST)<br/>├─ OpenAI (GPT-4o)<br/>├─ Anthropic Claude<br/>└─ Custom OpenAI Wire Proxy"]
+            ProviderReg["Provider Registry (SoM + Safe Mask)<br/>├─ Google Gemini (REST)<br/>├─ OpenAI (GPT-4o)<br/>├─ Anthropic Claude<br/>└─ Custom OpenAI Wire Proxy"]
         end
 
-        Cache[("SQLite WAL Cache<br/>(Composite Page Hash)")]
+        Cache[("SQLite WAL Cache<br/>(Khóa 5 Cột + Chống Fallback)")]
     end
 
     Page -->|Chụp Base64| CS
@@ -179,11 +179,11 @@ Tệp thực thi này sẽ tự động kiểm tra Python (>= 3.10), khởi tạ
    # cp .env.example .env    # macOS / Linux
    ```
 
-5. **Tải trọng số mô hình ONNX YOLO11s-seg (~25 MB):**
+5. **Tải trọng số mô hình ONNX (`yolo11s-seg` ~39.3 MB + `PP-OCRv6_medium` ~139 MB + `korean_PP-OCRv5` ~13.5 MB):**
    ```bash
    python scripts/download_models.py
    ```
-   *(Tùy chọn)* Nếu bạn bỏ qua bước này, hệ thống sẽ tự động stream tải mô hình từ Hugging Face trong lần dịch đầu tiên nếu bật `INKSHIFT_AUTO_DOWNLOAD_MODELS=true`.
+   *(Tùy chọn)* Nếu bạn bỏ qua bước này, hệ thống sẽ tự động tải mô hình còn thiếu khi chạy lần đầu nếu bật `INKSHIFT_AUTO_DOWNLOAD_MODELS=true`.
 
 #### Bước 2: Biên Dịch Tiện Ích Mở Rộng Extension
 
@@ -232,7 +232,7 @@ Server sẽ chạy cục bộ tại `127.0.0.1:8000`. Tiện ích mở rộng k�
 
 | Chế độ Engine | Quy trình xử lý hình ảnh | Lựa chọn dịch văn bản | Yêu cầu kết nối mạng |
 | :--- | :--- | :--- | :--- |
-| **`local` (Hybrid)** | YOLO11s-seg + OCRRouter (MangaOCR / RapidOCR) | `google-free`, `llm-google`, `llm-openai`, `llm-anthropic`, `llm-custom` | Tùy bộ dịch đã chọn |
+| **`local` (Hybrid)** | `YOLO11s-seg` + `OCRRouter` (`PP-OCRv6_medium` / Lazy Korean) | `google-free`, `llm-google`, `llm-openai`, `llm-anthropic`, `llm-custom` | Tùy bộ dịch đã chọn |
 | **`cloud` (Vision)** | Multimodal Vision API (Set-of-Marks) | Gemini 2.0, GPT-4o, Claude 3.5, hoặc Custom Vision | Bắt buộc có kết nối Internet |
 | **`mock` (Test)** | Tạo khung thoại mẫu giả lập | Trả về chuỗi thử nghiệm có sẵn | Hoàn toàn offline |
 
@@ -300,9 +300,8 @@ INKSHIFT_LOCAL_DEFAULT_TRANSLATOR=llm-custom
 
 | Thành phần xử lý | Công nghệ bên dưới | Độ trễ thông thường (GPU) | Chạy bằng CPU | Ghi chú |
 | :--- | :--- | :--- | :--- | :--- |
-| **Nhận diện bóng thoại** | YOLO11s-seg ONNX | **90 – 130 ms** | ~300 ms | Tăng tốc DirectML FP16 |
-| **OCR (Tiếng Anh / Latin)** | RapidOCR ONNX | **80 – 120 ms** | ~180 ms | Quét một lượt toàn trang |
-| **OCR (Tiếng Nhật dọc/Kanji)** | MangaOCR ONNX | **800 – 1.200 ms** | ~2.500 ms | Quét dọc theo từng bóng thoại |
+| **Nhận diện bóng thoại & Layout** | `YOLO11s-seg` ONNX | **115 – 176 ms** | ~415 – 480 ms | Tăng tốc DirectML FP16 (`detect_full_layout`) |
+| **OCR Hybrid Thống Nhất** | `PP-OCRv6_medium` (`rapidocr>=3.9.1`) | **700 – 915 ms** | ~1.2 – 2.0 s | Quét 1 lượt ZH/JA/EN + 2D Union-Find (fallback Hàn lười) |
 | **Dịch: Google Free** | Web Batch Dispatch | **150 – 200 ms** | ~150 ms | Hoàn toàn miễn phí |
 | **Dịch: Gemini Text thuần** | REST API (Prompt chữ) | **300 – 450 ms** | ~350 ms | Tiết kiệm >90% token so với Vision |
 | **Cloud Vision (Trọn gói)** | Gemini 2.0 / GPT-4o Vision | **1.200 – 1.800 ms** | ~1.500 ms | Gửi cả trang ảnh; bỏ qua OCR máy |
@@ -342,7 +341,7 @@ INKSHIFT_LOCAL_EXECUTION_PROVIDER=cpu    # hoặc "cuda" nếu máy có card NVI
 
 - Kiểm tra xem máy chủ FastAPI đã chạy tại địa chỉ `http://127.0.0.1:8000` trong cửa sổ dòng lệnh chưa.
 - Nếu bạn đổi cổng `INKSHIFT_PORT`, hãy cập nhật cổng tương ứng trong `src/extension/manifest.json` tại mục `host_permissions`.
-- Kiểm tra trực tiếp endpoint sức khỏe trên trình duyệt: `http://127.0.0.1:8000/api/v1/cache/stats`.
+- Kiểm tra trực tiếp endpoint sức khỏe trên trình duyệt: `http://127.0.0.1:8000/api/v1/health`.
 </details>
 
 <details>
@@ -371,7 +370,7 @@ Dự án áp dụng chặt chẽ hợp đồng kiểm soát chất lượng quy 
 
 - **Không sử dụng cờ bỏ qua lỗi**: Tuyệt đối không sử dụng `@ts-ignore`, `# type: ignore`, `# noqa` hay `eslint-disable`.
 - **Kiểm tra kiểu dữ liệu nghiêm ngặt**: Cả `tsc --noEmit` (TypeScript) và `mypy --strict` (Python) phải vượt qua với 0 lỗi.
-- **Bộ kiểm thử toàn diện**: Hơn 250 bài test cho tiện ích (Vitest) và hơn 295 bài test cho backend (pytest) với độ bao phủ dòng $\ge 80\%$.
+- **Bộ kiểm thử toàn diện**: 336 bài test tiện ích (25 tệp Vitest) và 365 bài test backend (pytest) đều đạt 100%.
 - **Bảo mật mã nguồn**: Bộ quét tự động đảm bảo không có bất kỳ API key hay bí mật nào bị commit vào lịch sử git.
 
 ---

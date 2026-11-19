@@ -1,11 +1,12 @@
 # Spec: Unified UI Overhaul — Bento Popup UI & Dynamic Floating Mascot HUD
 
 > **Module ID:** `extension-ui-overhaul`  
-> **Milestone:** Phase 29  
+> **Milestone:** Phases 29–47  
+> **Source ADR:** [ADR-016-ui-restructuring-modular-components-and-anti-slop-design-system.md](../decisions/ADR-016-ui-restructuring-modular-components-and-anti-slop-design-system.md), [ADR-019-ppocrv6-unified-hybrid-detection-and-auto-ocr.md](../decisions/ADR-019-ppocrv6-unified-hybrid-detection-and-auto-ocr.md), [ADR-020-resilient-cache-site-adapters-priority-queue-and-llm-repair.md](../decisions/ADR-020-resilient-cache-site-adapters-priority-queue-and-llm-repair.md)  
 > **Source Design System:** [design-system/inkshift/MASTER.md](../../design-system/inkshift/MASTER.md)  
 > **Design Overrides:** [popup.md](../../design-system/inkshift/pages/popup.md), [mascot-hud.md](../../design-system/inkshift/pages/mascot-hud.md)  
 > **Governing Rules:** `spec-driven-development`, `ui-ux-pro-max`, `design-system`, `planning-and-task-breakdown`, `test-driven-development`  
-> **Status:** PROPOSED — Awaiting Developer Review & Approval (@human)
+> **Status:** Implemented (Synced through Phase 47) — Approved by Solo Developer (@human)
 
 ---
 
@@ -75,11 +76,15 @@ The popup window is bounded to `width: 400px; max-height: 560px;`:
 └────────────────────────────────────────────────────────┘
 ```
 
+- **Conditional Engine Controls (View A):**
+  - **100% Automated OCR & Layout (ADR-019):** Manual `sourceLang` and `reader_mode` controls are omitted from View A; `PP-OCRv6_medium` + `YOLO11s-seg` infer language and reading flow automatically.
+  - **Safe Mask (`#safe-mask-container`, `#safe-mask-toggle`):** Toggles background masking in Cloud Vision mode to bypass moderation false positives.
+  - **Unbounded Custom Prompt (`#custom-prompt-container`, `#custom-prompt-input`):** Unrestricted `<textarea>` with quick style preset buttons (`Kiếm hiệp`, `Hài hước`, `Ngọt ngào`, `Đời thường`) and clear action (`#clear-custom-prompt-btn`) shown for Cloud AI or `llm-*` local translators.
 - **Smooth View Transition:** Clicking the gear icon button adds `.view-settings-active` to `#app`, smoothly sliding View A out to the left and View B (Settings) in from the right (`transform: translateX(...) 200ms cubic-bezier(0.16, 1, 0.3, 1)`).
 - **Settings View Structure:** Organized into clean collapsible accordions:
-  - **API Keys & Endpoints** (Gemini, OpenAI, Claude, Custom Endpoint).
+  - **API Keys & Endpoints** (Gemini, OpenAI, Anthropic, Custom Endpoint).
   - **Domain Rules** (Whitelist tags, Blacklist tags, Add domain form, Reset defaults).
-  - **Prefetch & Cache** (Prefetch toggle, depth selector, Cache flush).
+  - **Prefetch & Cache** (Prefetch toggle, depth selector, and decoupled **Browser RAM/DOM Cache Clear `#clear-browser-cache-btn`** vs **SQLite Database Cache Clear `#clear-db-cache-btn`**).
   - **Diagnostics** (Visual YOLO debug toggle, Mascot HUD toggle).
 
 ---
@@ -120,15 +125,15 @@ stateDiagram-v2
     Sleeping --> Idle: Visibility Toggled ON
 ```
 
-| State | Visual Frame | Trigger Source |
+| State | Visual Frame (`src/extension/assets/mascot/`) | Trigger Source |
 |---|---|---|
-| `idle` | `clawd-idle.svg` | Page loaded, 0 pending translation requests |
-| `reading` | `clawd-idle-reading.svg` | Active viewport reading, book booklet in hand |
-| `scanning` | `clawd-working-debugger.svg` | YOLO bubble detection underway on on-screen image |
-| `translating` | `clawd-working-typing.svg` | In-flight HTTP request to backend `/api/v1/translate` |
-| `success` | `clawd-happy.svg` | Overlay polygons mounted, 1-shot double-jump celebration |
-| `error` | `clawd-error.svg` | Network failure, backend offline, or 429 quota error |
-| `sleeping` | `clawd-sleeping.svg` | `overlayVisible === false` or domain blacklisted |
+| `idle` | `idle.svg` | Page loaded, 0 pending translation requests |
+| `reading` | `reading.svg` | Active viewport reading, booklet in hand |
+| `scanning` | `scanning.svg` | YOLO bubble detection underway on on-screen image |
+| `translating` | `translating.svg` | In-flight HTTP request to backend `/api/v1/translate` |
+| `success` | `success.svg` | Overlay polygons mounted, 1-shot double-jump celebration |
+| `error` | `error.svg` | Network failure, backend offline, or 429 quota error |
+| `sleeping` | `sleeping.svg` | `overlayVisible === false` or domain blacklisted |
 
 ---
 
@@ -148,7 +153,12 @@ export interface InkShiftStorageSchema {
   // Engine & Provider
   engine: 'auto' | 'local' | 'cloud'; // Default: 'auto'
   provider: 'google' | 'openai' | 'anthropic' | 'custom';
-  selectedModel: string;
+  translator?: string;
+  selected_models?: Record<string, string>;
+  model?: string;
+  filterVisionOnly?: boolean;
+  custom_prompt?: string;
+  safe_mask?: boolean;              // Default: true
   
   // Prefetch & Layout
   prefetchEnabled: boolean;         // Default: true
@@ -170,9 +180,9 @@ export interface InkShiftStorageSchema {
 ## 5. Verification & Quality Gate Plan
 
 1. **Unit & Component Tests (`vitest`):**
-   - Author tests in `tests/extension/test_popup_views.test.ts` verifying View A $\leftrightarrow$ View B sliding transitions and key listeners.
-   - Author tests in `tests/extension/test_mascot_hud.test.ts` verifying mascot state transitions (`idle` $\to$ `scanning` $\to$ `translating` $\to$ `success`), edge-snapping coordinate clamps, and popover toggle logic.
+   - Verified in `tests/extension/test_popup.test.ts` (View transitions, model discovery, custom prompt, dual cache clears, ADR-019 absence of manual mode/lang selectors).
+   - Verified in `tests/extension/test_mascot_hud.test.ts` (mascot state transitions `idle` $\to$ `scanning` $\to$ `translating` $\to$ `success`, edge-snapping coordinate clamps, popover toggle logic).
 2. **Accessibility & Floor Guard Compliance:**
-   - Verify WCAG AA/AAA contrast ratios for all text on `#12100E` and `#1C1917`.
-   - Verify zero suppression comments (`@ts-ignore`, `eslint-disable`, `# noqa`) via `python scripts/check.py --fast`.
+   - Verify contrast ratios on `#12100E` and `#1C1917`.
+   - Verify zero suppression comments (`@ts-ignore`, `eslint-disable`, `# noqa`).
    - Verify clean TypeScript build (`npm run typecheck:extension`).

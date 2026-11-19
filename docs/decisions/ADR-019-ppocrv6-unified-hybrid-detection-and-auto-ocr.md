@@ -58,3 +58,15 @@ The developer approved **Option A (`PP-OCRv6_medium`)** AND chose to **remove bo
   - First Korean chapter page incurs one extra fast crop recognition pass (~40–85ms reusing existing crops) before chapter caching locks onto Korean.
 - **Follow-up Tasks:**
   - Complete Phase 46 Tasks `46.1`–`46.10` in [tasks/todo.md](../../tasks/todo.md) and update [SPEC-local-engine.md](../specs/SPEC-local-engine.md) and [SPEC-popup-and-mascot-hud.md](../specs/SPEC-popup-and-mascot-hud.md).
+
+
+---
+
+## 5. Addendum: Phase 47 — 2D Spatial Residual Clustering, Panel/Bubble Barriers, IoMin SFX Exclusion & Noise Guard (2026-11-19)
+
+Live testing of `recognize_hybrid_page()` revealed that the original 1-pass greedy clustering in `src/backend/engines/local/ocr/text_assembler.py` (`overlap_y > 0.0 or gap_x <= 0.4 * avg_w`, and the horizontal symmetric condition) bridged vertically or horizontally distant residual detections across distinct manga panels whenever they shared an X column or Y band, while `IoA` SFX filtering (`inter / q_area >= 0.40`) leaked large DBNet quads fully enclosing smaller YOLO SFX boxes and low-confidence handwritten background strokes polluted translation batches.
+
+To resolve these failures without re-introducing dual-mode toggles:
+1. **2D Connected-Component (Union-Find) Clustering (`text_assembler.py`):** Replace 1-pass greedy clustering in `_cluster_vertical_entries` and `_cluster_horizontal_entries` with distance-ordered Union-Find (`_union_find_cluster_entries`), enforcing simultaneous 2D proximity (`_can_merge_vertical`, `_can_merge_horizontal`) and `<= 2.8x` font-scale parity.
+2. **Panel & Bubble Barriers (`text_assembler.py`, `engine.py`):** Forward `panel_boxes` and `bubble_boxes` from `LocalTranslationEngine.translate()` into `cluster_lines_bidirectional()`. Entries assign to the smallest-area enclosing panel (`_assign_panel_index`, supporting inset panels) and never merge across panels, while merges overlapping speech bubbles by `>25%` are rejected and final residual clusters overlapping speech bubbles by `>30%` are dropped.
+3. **IoMin SFX Exclusion & Context-Aware Residual Noise Guard (`router.py`):** Upgrade `_overlaps_sfx()` to intersection-over-smaller-area (`_overlaps_any_box_iomin`), isolate `_should_retry_korean()` to bubble crops when speech bubbles are present, apply differentiated confidence floors (`0.40` zero-bubble prose pages vs `0.50` YOLO `orphan_boxes` vs `0.55` default manga residuals), and filter residual single-character digits, low-confidence single kana/CJK glyphs, and short uppercase ASCII fragments (`_is_residual_noise_cluster`).

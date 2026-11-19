@@ -5,7 +5,7 @@
 - **Decision-Maker:** Solo Developer (@human)
 - **Consulted:** Antigravity AI Agent
 - **Related Spec / Feature:** Feature F1 (`docs/temp/smart-reading-pipeline/FEATURE-smart-reader-detection.md`)
-- **Research Source:** [RESEARCH-smart-reader-detection.md](../research/RESEARCH-smart-reader-detection.md)
+- **Research Source:** `RESEARCH-smart-reader-detection.md` *(archived)*
 
 ---
 

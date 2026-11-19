@@ -10,15 +10,15 @@
 
 Ensure all foundational components are built and present:
 
-1. **Model Weights:**
-   - Location: `.cache/inkshift/models/yolo11s-seg.onnx` (~25 MB).
-   - **Auto-Download:** The backend automatically stream-downloads missing weights from Hugging Face on startup when `INKSHIFT_AUTO_DOWNLOAD_MODELS=true`.
+1. **Model Weights (`.cache/inkshift/models/`):**
+   - `yolo11s-seg.onnx` (~39.3 MB from Hugging Face), `PP-OCRv6_det_medium.onnx` (~62.1 MB from ModelScope), `PP-OCRv6_rec_medium.onnx` (~76.6 MB from ModelScope), and optional `korean_PP-OCRv5_rec_mobile.onnx` (~13.5 MB, lazy-downloaded for Korean manhwa).
+   - **Auto-Download:** The backend automatically stream-downloads missing weights on first use when `INKSHIFT_AUTO_DOWNLOAD_MODELS=true`.
    - Alternatively, pre-download manually via:
      ```powershell
      python scripts/download_models.py
      ```
 2. **Python Backend Packages:**
-   - Verify `onnxruntime-directml`, `rapidocr-onnxruntime`, `httpx`, and `fastapi` are installed.
+   - Verify `onnxruntime-directml`, `rapidocr>=3.9.1`, `httpx`, and `fastapi` are installed.
 3. **Extension Distribution Bundle:**
    - Freshly compiled bundle exists in `dist/`.
    - Built via:
@@ -124,14 +124,14 @@ Observe the browser viewport and backend logs to confirm operation:
      RequestReceived: engine=local, target=vi, size_kb=2463.3
      StageStarted: stage=1/4, action="DecodeImageAndValidate"
      StageCompleted: stage=1/4, elapsed_ms=63.6
-     StageStarted: stage=3/4, action="OCRRecognition (mode=en)"
-     RapidOCR full-page completed: 29 text elements mapped to 7 bubbles in 1354.41ms (valid=6/7)
-     StageStarted: stage=4/4, action="BatchTranslate (6 blocks -> vi via google-free)"
-     StageCompleted: stage=4/4, elapsed_ms=3905.0
-     PipelineCompleted: engine=local, elapsed_ms=5348, blocks=6
+     StageStarted: stage=3/4, action="HybridOCR (mode=auto)"
+     StageCompleted: stage=3/4, elapsed_ms=890.0, adapter=rapidocr, lang=ja, bubbles=7/7, residual=1
+     StageStarted: stage=4/4, action="BatchTranslate (8 blocks [ja->vi] via google-free)"
+     StageCompleted: stage=4/4, elapsed_ms=390.0
+     PipelineCompleted: engine=local, elapsed_ms=1380, blocks=8
      ```
-   - On `local` (Non-JA): RapidOCR executes single-pass full-page recognition without individual bubble crops.
-   - On `cloud`: Visual grounding renders Set-of-Marks and queries upstream providers with automated retry on HTTP 429/503.
+   - On `local`: Unified Hybrid (`YOLO11s-seg` + `PP-OCRv6_medium` DirectML + lazy Korean fallback) automatically detects language (`ja`/`zh`/`ko`/`en`) and vertical/horizontal layout without manual UI toggles.
+   - On `cloud`: Visual grounding renders Set-of-Marks (with optional `safe_mask`) and queries upstream providers with automated retry on HTTP 429/503.
 
 2. **Chrome Browser & Extension Telemetry Log (`data/logs/extension.log`):**
    - Inspect `data/logs/extension.log` for background prefetch telemetry:
@@ -149,7 +149,7 @@ Observe the browser viewport and backend logs to confirm operation:
 
 | Issue | Likely Cause | Resolution |
 |---|---|---|
-| Badge displays **Offline** | Backend gateway is stopped or port 8000 is occupied | Re-run uvicorn or `start.bat`. Confirm `http://127.0.0.1:8000/api/v1/cache/stats` responds. |
+| Badge displays **Offline** | Backend gateway is stopped or port 8000 is occupied | Re-run uvicorn or `start.bat`. Confirm `http://127.0.0.1:8000/api/v1/health` responds. |
 | Cannot scan images on `file:///` URLs | File URL access permission not granted | Navigate to `chrome://extensions/` -> Details on InkShift -> Enable **Allow access to file URLs**. |
-| Missing model weights error | `yolo11s-seg.onnx` incomplete or missing | Run `python scripts/download_models.py --force`. |
+| Missing model weights error | `yolo11s-seg.onnx` or `PP-OCRv6_*_medium.onnx` incomplete or missing | Run `python scripts/download_models.py --force`. |
 | Extension UI does not reflect changes | Chrome cached previous build bundle | Click the **Reload (circular arrow)** button on the InkShift card in `chrome://extensions/`. |

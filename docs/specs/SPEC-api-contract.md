@@ -1,10 +1,10 @@
 # Spec: API Contract and Data Exchange Protocol (`api-contract`)
 
 > **Module ID:** `api-contract`  
-> **Source ADR:** [ADR-002-api-contract-and-data-exchange.md](../decisions/ADR-002-api-contract-and-data-exchange.md), [ADR-007-yolo11-manga-detection-and-visual-grounding.md](../decisions/ADR-007-yolo11-manga-detection-and-visual-grounding.md), [ADR-008-consolidated-engine-architecture-and-shared-detection.md](../decisions/ADR-008-consolidated-engine-architecture-and-shared-detection.md)  
+> **Source ADR:** [ADR-002-api-contract-and-data-exchange.md](../decisions/ADR-002-api-contract-and-data-exchange.md), [ADR-007-yolo11-manga-detection-and-visual-grounding.md](../decisions/ADR-007-yolo11-manga-detection-and-visual-grounding.md), [ADR-008-consolidated-engine-architecture-and-shared-detection.md](../decisions/ADR-008-consolidated-engine-architecture-and-shared-detection.md), [ADR-019-ppocrv6-unified-hybrid-detection-and-auto-ocr.md](../decisions/ADR-019-ppocrv6-unified-hybrid-detection-and-auto-ocr.md), [ADR-020-resilient-cache-site-adapters-priority-queue-and-llm-repair.md](../decisions/ADR-020-resilient-cache-site-adapters-priority-queue-and-llm-repair.md)  
 > **Parent Map:** [CAPABILITY_MAP.md](CAPABILITY_MAP.md)  
-> **Status:** Approved by Solo Developer (@human)  
-> **Phase:** Module 1 Foundation & Phase 15 Consolidation  
+> **Status:** Implemented (Synced through Phase 47) — Approved by Solo Developer (@human)  
+> **Phase:** Module 1 Foundation & Phases 15–47 Extensions  
 
 ---
 
@@ -35,19 +35,25 @@ Define the immutable data contract, coordinate system, error models, and communi
 Base URL: `http://localhost:8000/api/v1`
 
 ### 3.1 `POST /api/v1/translate` (Main Translation Endpoint)
-- **Description:** Submit a manga page image for detection and translation.
+- **Description:** Submit a manga page image for detection and translation. Supports priority preemption (`P0`/`P1`/`P2`), client disconnect skipping (HTTP 499), singleflight deduplication, custom LLM guidelines, and cloud safe masking.
 - **Request Headers:** `Content-Type: application/json`
 - **Request Body (`TranslationRequest`):**
   ```json
   {
     "image": "data:image/jpeg;base64,...",
-    "image_hash": "a1b2c3d4...", 
+    "image_hash": "a1b2c3d4...",
     "source_lang": "auto",
     "target_lang": "vi",
     "engine": "auto",
     "provider": "gemini",
+    "model": "gemini-2.5-flash",
     "translator": "google-free",
-    "force_refresh": false
+    "force_refresh": false,
+    "chapter_url": "https://mangadex.org/chapter/...",
+    "custom_prompt": null,
+    "safe_mask": null,
+    "reader_mode": "manga",
+    "priority": "P0"
   }
   ```
 - **Response 200 OK (`TranslationResponse`):**
@@ -58,6 +64,7 @@ Base URL: `http://localhost:8000/api/v1`
     "engine_used": "cloud",
     "execution_time_ms": 1120,
     "from_cache": false,
+    "is_fallback": false,
     "blocks": [
       {
         "id": "blk_01",
@@ -67,6 +74,7 @@ Base URL: `http://localhost:8000/api/v1`
           [95.0, 78.2], [70.1, 95.0], [25.4, 98.2], [5.0, 65.0], [8.2, 25.1]
         ],
         "parent_bubble_id": null,
+        "parent_box": null,
         "source_text": "何をしているんだ？",
         "translated_text": "Cậu đang làm cái gì thế?",
         "direction": "vertical",
@@ -76,23 +84,23 @@ Base URL: `http://localhost:8000/api/v1`
   }
   ```
 
-### 3.2 `GET /api/v1/cache/{image_hash}` (Lightweight Cache Lookup)
-- **Description:** Check if a page is already cached in SQLite without sending Base64 image data.
-- **Query Parameters:**
-  - `target_lang` (string, default: `"vi"`)
-  - `engine` (string, optional, default: `"auto"`)
-- **Response 200 OK:** Same as `TranslationResponse` (with `"from_cache": true`).
-- **Response 404 Not Found (`APIErrorResponse`):**
-  ```json
-  {
-    "success": false,
-    "error": {
-      "code": "CACHE_MISS",
-      "message": "Page has not been translated yet",
-      "details": { "image_hash": "a1b2c3d4..." }
+### 3.2 `GET /api/v1/cache/{image_hash}` & `DELETE /api/v1/cache`
+- **`GET /api/v1/cache/{image_hash}`:** Lightweight cache lookup without sending Base64 image data.
+  - **Query Parameters:** `target_lang` (default `"vi"`), `engine` (optional), `translator` (optional), `prompt_hash` (optional), `custom_prompt` (optional, auto-hashed), `reader_mode` (optional).
+  - **Response 200 OK:** Same as `TranslationResponse` (with `"from_cache": true`).
+  - **Response 404 Not Found (`APIErrorResponse`):**
+    ```json
+    {
+      "success": false,
+      "error": {
+        "code": "CACHE_MISS",
+        "message": "Page has not been translated yet",
+        "details": { "image_hash": "a1b2c3d4...", "target_lang": "vi" }
+      }
     }
-  }
-  ```
+    ```
+- **`DELETE /api/v1/cache`:** Purge all cached translations (`?all=true`) or specific entries (`?image_hash=...&target_lang=...&engine=...`).
+  - **Response 200 OK:** `{"success": true, "deleted": 12, "scope": "all"}` (or `"single"`). Returns `400 INVALID_CACHE_DELETE_REQUEST` if neither `all=true` nor `image_hash` is provided.
 
 ### 3.3 `GET /api/v1/health` (Health Check & Engine Discovery)
 - **Description:** Extension probes backend availability and active engine status on load.
@@ -139,6 +147,12 @@ Base URL: `http://localhost:8000/api/v1`
 - **`GET /api/v1/settings/providers`:** Returns masked key status (`AIzaSy...4xK8`) for all 4 providers (`google`, `openai`, `anthropic`, `custom`).
 - **`POST /api/v1/settings/providers`:** Persists API key or Base URL updates into `.env` atomically via temporary file swap and updates memory settings.
 
+### 3.6 `POST /api/v1/context/report`, `PATCH /api/v1/context/progress`, `GET /api/v1/context/chapters/{chapter_id}/pages`
+- Manga Context Graph lifecycle endpoints registering series/chapter page manifests (`POST /report`), recording active reading progress (`PATCH /progress`), and returning page status (`GET /chapters/{chapter_id}/pages`).
+
+### 3.7 `POST /api/v1/telemetry/logs`
+- Accepts batched `TelemetryBatchRequest` payloads from extension modules (`CS`, `SW`, `Prefetch`, `Popup`, `Overlay`) and writes structured logs into `./data/logs/extension.log`.
+
 ---
 
 ## 4. Data Models & TypeScript Contracts
@@ -172,25 +186,32 @@ export type ReadingDirection = 'vertical' | 'horizontal';
 export interface TranslatedBlock {
   id: string;
   box: BoundingBox;
-  polygon?: PolygonPoint[]; // Optional 18-25 vertex contour in relative percentage
-  parent_bubble_id?: string; // Optional grouping ID for merged connected bubbles
+  polygon?: PolygonPoint[];
+  parent_bubble_id?: string;
+  parent_box?: BoundingBox;
   source_text?: string;
   translated_text: string;
   direction?: ReadingDirection;
   confidence?: number;
 }
 
+export type EngineMode = 'auto' | 'local' | 'cloud' | 'mock';
+
 export interface TranslationRequest {
   image: string;
   image_hash?: string;
   source_lang?: string;
   target_lang?: string;
-  engine?: 'auto' | 'local' | 'cloud' | 'mock';
+  engine?: EngineMode;
   provider?: 'google' | 'openai' | 'anthropic' | 'custom' | string;
+  model?: string;
   translator?: string;
-  model?: string; // Chosen dynamic model identifier
   force_refresh?: boolean;
   chapter_url?: string;
+  custom_prompt?: string;
+  safe_mask?: boolean;
+  reader_mode?: 'manga' | 'text';
+  priority?: 'P0' | 'P1' | 'P2';
 }
 
 export interface TranslationResponse {
@@ -199,6 +220,7 @@ export interface TranslationResponse {
   engine_used: string;
   execution_time_ms: number;
   from_cache: boolean;
+  is_fallback?: boolean;
   blocks: TranslatedBlock[];
 }
 
@@ -212,29 +234,33 @@ export interface APIErrorResponse {
   success: false;
   error: APIErrorDetail;
 }
+
+export type APIResponse = TranslationResponse | APIErrorResponse;
 ```
 
 ### 4.4 Python Pydantic Models (`src/backend/schemas/contract.py`)
 
 ```python
-from typing import Annotated, Literal
-from pydantic import BaseModel, Field
+from typing import Annotated, Any, Literal
+from pydantic import BaseModel, ConfigDict, Field
 
-# Bounding box: [ymin, xmin, ymax, xmax] in 0-1000
-Coordinate = Annotated[int, Field(ge=0, le=1000)]
+Coordinate = Annotated[int, Field(ge=0, le=1000, description="Normalized coordinate [0, 1000]")]
 BoundingBox = tuple[Coordinate, Coordinate, Coordinate, Coordinate]
 
-# Polygon vertex: [x, y] in 0.0 - 100.0 percentage relative to box
-RelativePercent = Annotated[float, Field(ge=0.0, le=100.0)]
+RelativePercent = Annotated[float, Field(ge=0.0, le=100.0, description="Relative coordinate percent [0.0, 100.0]")]
 PolygonPoint = tuple[RelativePercent, RelativePercent]
 
-# SHA-256 Hex Hash: exactly 64 hexadecimal characters (prevents path traversal)
-HashString = Annotated[str, Field(pattern=r"^[a-fA-F0-9]{64}$", description="SHA-256 64-character hex digest")]
+HashString = Annotated[
+    str,
+    Field(pattern=r"^[a-fA-F0-9]{64}$", description="SHA-256 64-character hexadecimal digest"),
+]
 
 
 class TranslatedBlock(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
     id: str = Field(description="Unique identifier for the block")
-    box: BoundingBox = Field(description="[ymin, xmin, ymax, xmax] in 0-1000")
+    box: BoundingBox = Field(description="Normalized bounding box tuple [ymin, xmin, ymax, xmax] in range 0-1000")
     polygon: list[PolygonPoint] | None = Field(
         default=None,
         description="18-25 vertices in 0-100% relative coordinates for clip-path mask",
@@ -243,38 +269,58 @@ class TranslatedBlock(BaseModel):
         default=None,
         description="Parent bubble identifier for merged connected speech balloons",
     )
-    source_text: str | None = Field(default=None, description="OCR text detected")
+    parent_box: BoundingBox | None = Field(
+        default=None,
+        description="Parent bubble bounding box [ymin, xmin, ymax, xmax] if block is a child text in a merged bubble",
+    )
+    source_text: str | None = Field(default=None, description="Raw OCR text extracted from manga speech bubble")
     translated_text: str = Field(description="Translated text in target language")
     direction: Literal["vertical", "horizontal"] = Field(default="vertical")
     confidence: float | None = Field(default=None, ge=0.0, le=1.0)
 
 
 class TranslationRequest(BaseModel):
-    # Max image payload size: ~15MB Base64 string length cap (20MB)
-    image: str = Field(max_length=20_000_000, description="Base64 encoded image string or Data URL (max 15MB binary / 20MB Base64)")
-    image_hash: HashString | None = Field(default=None, description="Precomputed SHA-256 hex digest")
+    model_config = ConfigDict(extra="forbid")
+
+    image: str = Field(max_length=20_000_000, description="Base64 encoded image string or Data URL (capped at 20MB characters / ~15MB binary)")
+    image_hash: HashString | None = Field(default=None)
     source_lang: str = Field(default="auto")
     target_lang: str = Field(default="vi")
-    engine: Literal["cloud", "local", "local-manga", "local-rapid", "auto"] = Field(default="auto")
+    engine: Literal["local", "cloud", "mock", "auto"] = Field(default="auto")
+    provider: str | None = Field(default=None)
+    model: str | None = Field(default=None)
+    translator: str | None = Field(default=None)
     force_refresh: bool = Field(default=False)
+    chapter_url: str | None = Field(default=None)
+    custom_prompt: str | None = Field(default=None)
+    safe_mask: bool | None = Field(default=None)
+    reader_mode: Literal["manga", "text"] = Field(default="manga")
+    priority: Literal["P0", "P1", "P2"] = Field(default="P0")
 
 
 class TranslationResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     success: Literal[True] = True
     page_hash: HashString
     engine_used: str
-    execution_time_ms: int
+    execution_time_ms: int = Field(ge=0)
     from_cache: bool = False
-    blocks: list[TranslatedBlock]
+    is_fallback: bool = False
+    blocks: list[TranslatedBlock] = Field(default_factory=list)
 
 
 class APIErrorDetail(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     code: str
     message: str
-    details: dict | list | str | None = None
+    details: Any | None = None
 
 
 class APIErrorResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     success: Literal[False] = False
     error: APIErrorDetail
 ```
@@ -342,10 +388,10 @@ To prevent breaking words mid-character, clipping accents vertically, and elimin
 
 ---
 
-## 9. Success Criteria
+## 10. Success Criteria
 
-- [ ] SC-1: Pydantic models for `TranslationRequest`, `TranslationResponse`, and `APIErrorResponse` pass strict type checks (`mypy --strict`).
-- [ ] SC-2: TypeScript interfaces matching the Pydantic schema compile with zero errors (`tsc --noEmit`).
-- [ ] SC-3: Standard golden fixture (`sample_page_response.json`) validates against both Python and TypeScript contracts.
-- [ ] SC-4: Coordinate validation rules strictly reject invalid ranges ($>1000$ or $<0$).
-- [ ] SC-5: Error response structure is identical across all endpoints.
+- [x] SC-1: Pydantic models for `TranslationRequest`, `TranslationResponse`, and `APIErrorResponse` pass strict type checks (`mypy --strict`).
+- [x] SC-2: TypeScript interfaces matching the Pydantic schema compile with zero errors (`tsc --noEmit`).
+- [x] SC-3: Standard golden fixture (`sample_page_response.json`) validates against both Python and TypeScript contracts.
+- [x] SC-4: Coordinate validation rules strictly reject invalid ranges ($>1000$ or $<0$).
+- [x] SC-5: Error response structure is identical across all endpoints.

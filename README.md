@@ -44,30 +44,30 @@
 - **Option G1 Gateway Pattern**: Detection executes once at the gateway level. Pre-detected bubble coordinates and polygons are shared with all downstream engines to eliminate redundant inference.
 
 ### 3. Dual-Engine Architecture (Local Hybrid & Cloud Vision)
-- **Local Engine (2-Stage Decoupled Pipeline — ADR-006, ADR-008, ADR-012)**:
-  - *Stage 1 (On-Device Perception)*: `OCRRouter` routes Japanese vertical text to **MangaOCR** (~0.8-1.2s) and Latin/English/Chinese text to **RapidOCR** (~80-120ms).
-  - *Stage 2 (Translator Registry)*: Coordinates 5 swappable translation adapters:
+- **Local Engine (Unified Hybrid Pipeline — ADR-006, ADR-008, ADR-019, ADR-020)**:
+  - *Stage 1 (On-Device Perception)*: `OCRRouter.recognize_hybrid_page()` runs single-pass **`PP-OCRv6_medium`** (`rapidocr>=3.9.1` DirectML) fused with `YOLO11s-seg` speech bubble polygons, panel boundaries, and SFX exclusion masks (`IoMin`) across Japanese (vertical/horizontal), Chinese, and English, with automatic lazy fallback to **`korean_PP-OCRv5_rec_mobile`** (chapter-cached) and **2D Union-Find residual clustering** — 100% automated with zero manual language or layout toggles.
+  - *Stage 2 (Translator Registry)*: Coordinates 5 swappable translation adapters (with `<think>` stripping, malformed JSON repair, and alignment recovery on `LLMTextTranslator`, plus `is_fallback` zero-poisoning protection):
     1. `google-free`: Zero-cost web endpoint (~150ms, no API key required).
     2. `llm-google`: Text-only Gemini translation (>90% token savings vs Vision).
     3. `llm-openai`: Text-only OpenAI GPT-4o-mini translation.
     4. `llm-anthropic`: Text-only Claude 3.5 Sonnet translation.
-    5. `llm-custom`: OpenAI-wire compatible local or remote server (Ollama, vLLM, DeepSeek, Qwen).
-- **Cloud Vision Hub (ADR-004, ADR-012)**:
+    5. `llm-custom`: OpenAI-wire compatible local or remote server (LM Studio, Ollama, vLLM, DeepSeek, Qwen) with unbounded `custom_prompt` styling.
+- **Cloud Vision Hub (ADR-004, ADR-012, ADR-020)**:
   - 4 provider tiers: Google Gemini (REST), OpenAI (GPT-4o), Anthropic Claude, and custom OpenAI-compatible proxies.
-  - Set-of-Marks visual grounding for character dialogue localization directly from raw images.
+  - Set-of-Marks visual grounding with `custom_prompt` guidelines and automatic `safe_mask` background masking upon safety policy refusals.
 
-### 4. Smart Reader Layout Adaptation
-- **Multi-Mode Layout Detection**: Detects single-page carousels, double-page horizontal spreads, and vertical long strips dynamically.
-- **Dynamic Rescaling**: Speech bubbles automatically rescale without mask distortion when manga reader pages adjust viewport dimensions or zoom levels.
+### 4. Smart Reader Layout Adaptation & Modular Site Adapters
+- **Multi-Mode Layout & Adapter Registry (`SiteAdapterRegistry`)**: Supports Single, Double-Page Spread, and Long-Strip layouts automatically across universal readers, plus dedicated `MangaDexAdapter` (MangaDex@Home manifest & `blob:` fallback) and `HitomiAdapter` (`declarativeNetRequest` Referer bypass, AVIF-first Anycast sharding, WebP failover).
+- **Priority Queue & Stale Preemption**: `PriorityLocalLock` lets active `P0` visible pages preempt lookahead `P1`/`P2` prefetch queues, while `CANCEL_PENDING_TRANSLATIONS` and FastAPI `is_disconnected()` abort superseded navigations.
 - **Domain Whitelisting & Filtering**: Flexible per-domain rule management directly in the extension popup.
 
 ### 5. Interactive Mascot HUD & Keyboard Controls
 - **Tactile Companion**: Draggable 2D mascot with squash-and-stretch physics that docks anywhere on the screen and persists its position.
-- **Live Pipeline State Machine**: Mascot visually reflects pipeline activity (`idle`, `scanning`, `translating`, `success`, `error`, `sleeping`).
+- **Live Pipeline State Machine**: Mascot visually reflects pipeline activity (`idle`, `reading`, `scanning`, `translating`, `success`, `error`, `sleeping`).
 - **Instant Controls**: Toggle translations on/off instantly with <kbd>Alt</kbd> + <kbd>Z</kbd> or toggle the Mascot HUD with <kbd>Alt</kbd> + <kbd>M</kbd>.
 
-### 6. Sub-Millisecond SQLite Composite Caching
-- **WAL-Mode Caching**: Caches translation responses by composite key `(page_hash, engine, target_lang)`.
+### 6. Sub-Millisecond 5-Column SQLite Composite Caching
+- **WAL-Mode 5-Column Isolation & Zero-Poisoning**: Caches translation responses by `(image_hash, target_lang, engine_used, translator_used, prompt_hash)`, skips persistence whenever `is_fallback=true`, and exposes `DELETE /api/v1/cache` alongside separate **Browser RAM/DOM** vs **SQLite DB** clear controls in the popup.
 - **Zero-Latency Repeat Views**: Re-reading previously translated chapters executes in `< 5ms` directly from local SQLite storage without invoking OCR or AI APIs.
 
 ---
@@ -83,25 +83,25 @@ flowchart TD
     end
 
     subgraph Extension["EXTENSION ENGINE (Chromium MV3)"]
-        CS["Content Script<br/>(Layout Observers & Font Fitter)"]
-        SW["Background Service Worker<br/>(Message Broker & Session Lifecycle)"]
+        CS["Content Script<br/>(SiteAdapters, Observers & Font Fitter)"]
+        SW["Background Service Worker<br/>(Singleflight, DNR Referer & Cancellation)"]
     end
 
     subgraph Gateway["FASTAPI BACKEND GATEWAY (http://127.0.0.1:8000)"]
-        Detector["YOLO11s-seg ONNX<br/>(DirectML GPU AMD / NVIDIA / Intel)"]
+        Detector["YOLO11s-seg ONNX (PriorityLocalLock)<br/>(DirectML GPU AMD / NVIDIA / Intel)"]
         Registry["Engine Registry"]
         
-        subgraph BranchA["Branch A: Local Engine (2-Stage Decoupled)"]
-            OCR["OCR Router<br/>├─ MangaOCR (Japanese Vertical/Kanji)<br/>└─ RapidOCR (English/Latin/Hanzi)"]
-            Translator["Translator Registry<br/>├─ google-free (Web ~150ms)<br/>├─ llm-google (Gemini Text-Only)<br/>├─ llm-openai (GPT-4o-mini Text)<br/>├─ llm-anthropic (Claude Text)<br/>└─ llm-custom (Ollama / vLLM / Qwen)"]
+        subgraph BranchA["Branch A: Local Engine (Unified Hybrid)"]
+            OCR["OCR Router<br/>├─ PP-OCRv6_medium DirectML (ZH/JA/EN + 2D Clustering)<br/>└─ Lazy korean_PP-OCRv5_rec_mobile Fallback"]
+            Translator["Translator Registry<br/>├─ google-free (Web ~150ms)<br/>├─ llm-google (Gemini Text-Only)<br/>├─ llm-openai (GPT-4o-mini Text)<br/>├─ llm-anthropic (Claude Text)<br/>└─ llm-custom (LM Studio / Ollama / Qwen)"]
             OCR --> Translator
         end
 
         subgraph BranchB["Branch B: Cloud Vision Hub"]
-            ProviderReg["Provider Registry (Set-of-Marks Vision)<br/>├─ Google Gemini (REST)<br/>├─ OpenAI (GPT-4o)<br/>├─ Anthropic Claude<br/>└─ Custom OpenAI Wire Proxy"]
+            ProviderReg["Provider Registry (SoM + Safe Mask)<br/>├─ Google Gemini (REST)<br/>├─ OpenAI (GPT-4o)<br/>├─ Anthropic Claude<br/>└─ Custom OpenAI Wire Proxy"]
         end
 
-        Cache[("SQLite WAL Cache<br/>(Composite Page Hash)")]
+        Cache[("SQLite WAL Cache<br/>(5-Column Key + is_fallback Guard)")]
     end
 
     Page -->|Capture Base64| CS
@@ -177,11 +177,11 @@ This launcher automatically validates Python (>= 3.10), initializes `.venv`, ins
    # cp .env.example .env    # macOS / Linux
    ```
 
-5. **Download YOLO11s-seg ONNX model weights (~25 MB):**
+5. **Download ONNX model weights (`yolo11s-seg` ~39.3 MB + `PP-OCRv6_medium` ~139 MB + `korean_PP-OCRv5` ~13.5 MB):**
    ```bash
    python scripts/download_models.py
    ```
-   *(Optional)* If omitted, the gateway automatically stream-downloads missing weights on first detection request (`INKSHIFT_AUTO_DOWNLOAD_MODELS=true`).
+   *(Optional)* If omitted, the gateway automatically stream-downloads missing weights on first use (`INKSHIFT_AUTO_DOWNLOAD_MODELS=true`).
 
 #### Step 2: Browser Extension Build & Load
 
@@ -230,7 +230,7 @@ The server binds to `127.0.0.1:8000`. The extension communicates locally with th
 
 | Engine Mode | Perception Pipeline | Text Translator Options | Network Requirement |
 | :--- | :--- | :--- | :--- |
-| **`local` (Hybrid)** | YOLO11s-seg + OCRRouter (MangaOCR / RapidOCR) | `google-free`, `llm-google`, `llm-openai`, `llm-anthropic`, `llm-custom` | Varies by translator (see below) |
+| **`local` (Hybrid)** | `YOLO11s-seg` + `OCRRouter` (`PP-OCRv6_medium` / Lazy Korean) | `google-free`, `llm-google`, `llm-openai`, `llm-anthropic`, `llm-custom` | Varies by translator (see below) |
 | **`cloud` (Vision)** | Multimodal Vision API (Set-of-Marks) | Gemini 2.0, GPT-4o, Claude 3.5, or Custom Vision | Internet required |
 | **`mock` (Test)** | Synthetic Bounding Boxes | Deterministic mock strings | Fully offline |
 
@@ -319,9 +319,14 @@ INKSHIFT_LOCAL_DEFAULT_TRANSLATOR=llm-custom
 | Variable | Default | Description |
 | :--- | :--- | :--- |
 | `INKSHIFT_LOCAL_MODEL_DIR` | `./.cache/inkshift/models` | Directory path for stored ONNX model weights |
-| `INKSHIFT_LOCAL_DEFAULT_OCR` | `auto` | OCR routing strategy: `auto`, `manga-ocr`, `rapidocr` |
+| `INKSHIFT_LOCAL_DEFAULT_OCR` | `auto` | Automatic unified OCR strategy (`auto` recommended) |
 | `INKSHIFT_LOCAL_DEFAULT_TRANSLATOR` | `google-free` | Text translator: `google-free`, `llm-google`, `llm-openai`, `llm-anthropic`, `llm-custom` |
-| `INKSHIFT_LOCAL_EXECUTION_PROVIDER` | `directml` | ONNX execution provider: `directml`, `cuda`, `cpu` |
+| `INKSHIFT_LOCAL_EXECUTION_PROVIDER` | `directml` | ONNX execution provider: `directml`, `cpu` |
+| `INKSHIFT_LOCAL_LLM_TIMEOUT` | `120.0` | Timeout in seconds for local LLM text translation |
+| `INKSHIFT_LOCAL_OCR_DET_MODEL_PATH` | `.../PP-OCRv6_det_medium.onnx` | Custom path for PP-OCRv6 detection model |
+| `INKSHIFT_LOCAL_OCR_REC_MODEL_PATH` | `.../PP-OCRv6_rec_medium.onnx` | Custom path for PP-OCRv6 multilingual recognition model |
+| `INKSHIFT_LOCAL_OCR_KO_MODEL_PATH` | `.../korean_PP-OCRv5_rec_mobile.onnx` | Custom path for lazy-loaded Korean fallback recognizer |
+| `INKSHIFT_AUTO_DOWNLOAD_MODELS` | `true` | Auto-download missing YOLO/OCR ONNX weights on first use |
 
 </details>
 
@@ -354,9 +359,8 @@ INKSHIFT_LOCAL_DEFAULT_TRANSLATOR=llm-custom
 
 | Pipeline Component | Underlying Technology | Typical Latency (GPU) | CPU Fallback | Notes |
 | :--- | :--- | :--- | :--- | :--- |
-| **Bubble Detection** | YOLO11s-seg ONNX | **90 – 130 ms** | ~300 ms | DirectML FP16 acceleration |
-| **OCR (English / Latin)** | RapidOCR ONNX | **80 – 120 ms** | ~180 ms | Single-pass full-page recognition |
-| **OCR (Japanese Kanji/Vertical)** | MangaOCR ONNX | **800 – 1,200 ms** | ~2,500 ms | Tate-gaki vertical sequence recognition |
+| **Bubble & Layout Detection** | `YOLO11s-seg` ONNX | **115 – 176 ms** | ~415 – 480 ms | DirectML FP16 acceleration (`detect_full_layout`) |
+| **Unified Hybrid OCR** | `PP-OCRv6_medium` (`rapidocr>=3.9.1`) | **700 – 915 ms** | ~1.2 – 2.0 s | Single-pass ZH/JA/EN + 2D residual clustering (lazy Korean fallback) |
 | **Translation: Google Free** | Web Batch Dispatch | **150 – 200 ms** | ~150 ms | Zero cost, batch joined payload |
 | **Translation: Gemini Text-Only** | REST API (Text Prompt) | **300 – 450 ms** | ~350 ms | >90% token savings vs Vision LLM |
 | **Cloud Vision (End-to-End)** | Gemini 2.0 / GPT-4o Vision | **1,200 – 1,800 ms** | ~1,500 ms | Sends full page image; bypasses local OCR |
@@ -396,7 +400,7 @@ INKSHIFT_LOCAL_EXECUTION_PROVIDER=cpu    # or "cuda" if NVIDIA GPU is configured
 
 - Verify that the FastAPI server is running at `http://127.0.0.1:8000` via terminal output.
 - If you modified `INKSHIFT_PORT`, update the matching entry in `src/extension/manifest.json` under `host_permissions`.
-- Test the health endpoint directly in your browser: `http://127.0.0.1:8000/api/v1/cache/stats`.
+- Test the health endpoint directly in your browser: `http://127.0.0.1:8000/api/v1/health`.
 </details>
 
 <details>
@@ -425,7 +429,7 @@ The project enforces a strict quality bar codified in [CONSTRAINTS.md](CONSTRAIN
 
 - **Zero Suppression Policy**: Zero `@ts-ignore`, `# type: ignore`, `# noqa`, or `eslint-disable` comments permitted.
 - **Strict Static Typing**: Both `tsc --noEmit` (TypeScript) and `mypy --strict` (Python) must pass with 0 errors.
-- **Comprehensive Test Suite**: 250+ extension tests (Vitest) and 295+ backend tests (pytest) with $\ge 80\%$ line coverage.
+- **Comprehensive Test Suite**: 336 extension tests (25 Vitest files) and 365 backend tests (pytest) passing cleanly.
 - **Floor Guard Security**: Automated scans verify zero hardcoded secrets or API tokens in git history.
 
 Execute the multi-stage quality gate locally:

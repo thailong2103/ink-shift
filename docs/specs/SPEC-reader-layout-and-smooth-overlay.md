@@ -4,7 +4,7 @@
 > **Milestone:** Phase 26  
 > **Source ADR:** [docs/decisions/ADR-013-reader-layout-strategy-and-smooth-overlay-anchoring.md](../decisions/ADR-013-reader-layout-strategy-and-smooth-overlay-anchoring.md)  
 > **Governing Rules:** `spec-driven-development`, `documentation-and-adrs`, `planning-and-task-breakdown`, `test-driven-development`  
-> **Status:** Approved by Solo Developer (@human) on 2026-10-24  
+> **Status:** Implemented (Synced through Phase 47) — Approved by Solo Developer (@human) on 2026-10-24  
 
 ---
 
@@ -77,8 +77,9 @@ Update `syncOverlaysVisibilityAndPosition(options?: { layoutMode?: ReaderLayoutM
 ```bash
 # Typecheck Extension TypeScript
 npm run typecheck:extension
+```
 
-### 3.4 Hot-Change Adaptation & Viewport Geometry Filtering (Phase 27 - ADR-014)
+### 3.6 Hot-Change Adaptation & Viewport Geometry Filtering (Phase 27 - ADR-014)
 
 When user switches reading mode in-page (e.g. MangaDex reader settings menu) without full reload:
 - **Viewport-Aware Intersection Filter:** `detectCurrentReaderLayoutMode()` must filter candidate images to those strictly intersecting the viewport (`rect.left < innerWidth && rect.right > 0 && rect.top < innerHeight && rect.bottom > 0`) before inspecting horizontal adjacency (`double`) or vertical stacking (`strip`).
@@ -109,8 +110,8 @@ python scripts/check.py --fast
 - [x] **SC-2 (Double-Page Spread Parity):** In MangaDex Double-Page mode, overlays on both the left and right pages render simultaneously without flickering or toggling off.
 - [x] **SC-3 (Long-Strip Culling Parity):** In Long-Strip mode, all pages currently visible on screen render overlays; off-screen pages are culled cleanly without jumpiness.
 - [x] **SC-4 (Clean Code & Separation):** `updateActiveOverlaysAppearance` never mutates `host.style.display`; uses `.inkshift-overlay-hidden`.
-- [x] **SC-5 (Zero Regressions):** All 208+ TypeScript tests pass; `tsc --noEmit` reports 0 errors; Floor Guard has 0 suppressions.
-- [ ] **SC-6 (Viewport-Aware Detection):** Double-page spread detection succeeds with 100% reliability regardless of off-screen carousel buffer images sitting at negative coordinates.
-- [ ] **SC-7 (Page Number Parity):** Pages 8 and 9 in Double-Page mode receive translations for Pages 8 and 9; never mounts translations for Pages 4 or 5.
-- [ ] **SC-8 (Hot-Change Responsiveness):** Switching modes in reader menu takes effect within $\le 50\text{ms}$ without requiring manual scrolling or page reloads.
-- [ ] **SC-9 (Responsive Bubble Fitting):** Switching Single $\leftrightarrow$ Double maintains exact bubble contour hugging without mask distortion across faces.
+- [x] **SC-5 (Zero Regressions):** All 336 Extension TypeScript tests pass; `tsc --noEmit` reports 0 errors; Floor Guard has 0 suppressions.
+- [x] **SC-6 (Viewport-Aware Detection):** Double-page spread detection succeeds with 100% reliability regardless of off-screen carousel buffer images sitting at negative coordinates.
+- [x] **SC-7 (Page Number Parity):** Pages 8 and 9 in Double-Page mode receive translations for Pages 8 and 9; never mounts translations for Pages 4 or 5.
+- [x] **SC-8 (Hot-Change Responsiveness):** Switching modes in reader menu takes effect within $\le 50\text{ms}$ without requiring manual scrolling or page reloads.
+- [x] **SC-9 (Responsive Bubble Fitting):** Switching Single $\leftrightarrow$ Double maintains exact bubble contour hugging without mask distortion across faces.
