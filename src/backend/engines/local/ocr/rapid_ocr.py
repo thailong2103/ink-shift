@@ -1,22 +1,25 @@
-"""RapidOCR (PP-OCRv4 ONNX) adapter for multilingual, Latin, and Chinese manga recognition."""
+"""RapidOCR (PP-OCRv6_medium & Korean PP-OCRv5 ONNX) adapter with DirectML GPU acceleration."""
 
 from __future__ import annotations
 
 import importlib
 import io
-import os
 import time
 from collections.abc import Sequence
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+import cv2
 import numpy as np
 from PIL import Image
 
 from src.backend.engines.local.ocr.text_assembler import (
     ParagraphCluster,
     assemble_comic_lines,
-    clean_japanese_text,
-    cluster_lines_to_paragraphs,
+    clean_cjk_text,
+    cluster_lines_bidirectional,
+    order_bubble_lines_bidirectional,
+    parse_ocr_entry,
 )
 from src.backend.logging import get_logger
 
@@ -26,12 +29,33 @@ if TYPE_CHECKING:
 logger = get_logger("ocr.rapid")
 
 
-class RapidOCRAdapter:
-    """Multilingual OCR adapter wrapping rapidocr-onnxruntime with DirectML GPU acceleration."""
+def to_bgr_array(image_np: np.ndarray[Any, Any] | Image.Image) -> np.ndarray[Any, Any]:
+    """Convert PIL RGB Image or RGB numpy array to OpenCV BGR numpy array."""
+    if isinstance(image_np, Image.Image):
+        rgb = np.array(image_np.convert("RGB"))
+        return cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+    if image_np.ndim == 2:
+        return cv2.cvtColor(image_np, cv2.COLOR_GRAY2BGR)
+    if image_np.shape[2] == 4:
+        return cv2.cvtColor(image_np, cv2.COLOR_RGBA2BGR)
+    return cv2.cvtColor(image_np, cv2.COLOR_RGB2BGR)
 
-    def __init__(self, rapidocr_engine: Any | None = None) -> None:
+
+class RapidOCRAdapter:
+    """Multilingual OCR adapter wrapping rapidocr>=3.9.1 with explicit DirectML ORT session injection."""
+
+    def __init__(
+        self,
+        rapidocr_engine: Any | None = None,
+        execution_provider: str | None = None,
+    ) -> None:
         self._engines: dict[str, Any] = {}
         self._custom_engine_provided = rapidocr_engine is not None
+        self._execution_provider_override = execution_provider
+        self._det_engine: Any | None = None
+        self._rec_engine: Any | None = None
+        self._ko_rec_engine: Any | None = None
+        self._ko_load_attempted = False
         if rapidocr_engine is not None:
             self._engines["default"] = rapidocr_engine
 
@@ -42,7 +66,7 @@ class RapidOCRAdapter:
 
     @property
     def _engine(self) -> Any | None:
-        """Backwards-compatibility accessor for the default engine instance."""
+        """Backwards-compatibility accessor for injected or composite default engine."""
         return self._engines.get("default")
 
     @property
@@ -50,197 +74,397 @@ class RapidOCRAdapter:
         """RapidOCR supports single-pass full-page text detection and recognition."""
         return True
 
+    @property
+    def supports_split_pipeline(self) -> bool:
+        """True when native PP-OCRv6 split det/rec pipeline is active (no legacy mock override)."""
+        return not self._custom_engine_provided and not any(
+            k in self._engines for k in ("default", "ja")
+        )
+
     async def is_available(self) -> bool:
         """Check whether RapidOCR runtime is importable or an engine is already loaded."""
-        if self._engines:
+        if self._engines or (self._det_engine is not None and self._rec_engine is not None):
             return True
         try:
-            importlib.import_module("rapidocr_onnxruntime")
+            importlib.import_module("rapidocr")
             return True
         except ImportError:
             return False
 
-    def _normalize_lang(self, lang: str | None) -> str:
-        """Normalize language identifier to internal key."""
+    @staticmethod
+    def _normalize_lang(lang: str | None) -> str:
+        """Normalize legacy language identifier to internal key."""
         if not lang or lang == "auto":
             return "default"
         code = lang.lower().strip()
-        if code in ("ja", "japanese"):
-            return "ja"
         if code in ("ko", "korean"):
             return "ko"
+        if code in ("ja", "japanese"):
+            return "ja"
         return "default"
 
-    def _ensure_engine(self, lang: str = "default") -> None:
-        """Ensure that the engine for the requested language is initialized in the pool."""
-        self._get_engine(lang)
+    @staticmethod
+    def _create_ort_session(model_path: str, execution_provider: str = "directml") -> Any:
+        """Create onnxruntime InferenceSession bypassing rapidocr DictConfig DML bug."""
+        ort = importlib.import_module("onnxruntime")
+        if execution_provider == "directml":
+            providers: list[Any] = [
+                ("DmlExecutionProvider", {"device_id": 0}),
+                "CPUExecutionProvider",
+            ]
+            try:
+                sess = ort.InferenceSession(model_path, providers=providers)
+                active = sess.get_providers()
+                logger.debug("Loaded ORT session '%s' with providers=%s", Path(model_path).name, active)
+                return sess
+            except (RuntimeError, ValueError, OSError) as dml_exc:
+                logger.warning(
+                    "DirectML initialization failed for '%s' (%s); falling back to CPUExecutionProvider.",
+                    Path(model_path).name,
+                    dml_exc,
+                )
+        return ort.InferenceSession(model_path, providers=["CPUExecutionProvider"])
 
-    def _get_engine(self, lang: str = "default") -> Any:
-        """Lazily initialize and cache RapidOCR engine for the target language."""
-        target_lang = self._normalize_lang(lang)
-        if target_lang in self._engines and self._engines[target_lang] is not None:
-            return self._engines[target_lang]
-
-        # If a single custom mock or engine was explicitly passed in constructor, reuse it
-        if (
-            self._custom_engine_provided
-            and "default" in self._engines
-            and self._engines["default"] is not None
-            and not isinstance(self._engines["default"], dict)
-            and target_lang != "default"
-            and target_lang not in self._engines
-        ):
-            self._engines[target_lang] = self._engines["default"]
-            return self._engines["default"]
-
+    def _load_rapidocr_base_cfg(self) -> tuple[Any, Path, Any, Any, Any]:
+        """Import rapidocr submodules and load canonical OmegaConf base config."""
         try:
-            rapid_module = importlib.import_module("rapidocr_onnxruntime")
-            rapid_cls = rapid_module.RapidOCR
+            rapid_pkg = importlib.import_module("rapidocr")
+            det_mod = importlib.import_module("rapidocr.ch_ppocr_det.main")
+            rec_mod = importlib.import_module("rapidocr.ch_ppocr_rec.main")
+            parse_mod = importlib.import_module("rapidocr.utils.parse_parameters")
+            omega_mod = importlib.import_module("omegaconf")
         except (ImportError, AttributeError) as exc:
             logger.exception("Failed to initialize RapidOCR engine")
             raise RuntimeError(
                 f"Failed to initialize RapidOCR engine: {exc}. "
-                "Ensure 'rapidocr-onnxruntime' is installed in the environment."
+                "Ensure 'rapidocr>=3.9.1' is installed in the environment."
             ) from exc
 
+        cfg_path = Path(str(rapid_pkg.__file__)).resolve().parent / "config.yaml"
+        base_cfg = parse_mod.ParseParams.load(cfg_path)
+        return (
+            base_cfg,
+            Path(str(rapid_pkg.__file__)).resolve().parent / "models",
+            det_mod.TextDetector,
+            rec_mod.TextRecognizer,
+            omega_mod.OmegaConf,
+        )
+
+    def _ensure_det_and_rec(self) -> None:
+        """Lazily initialize PP-OCRv6_det_medium and PP-OCRv6_rec_medium DirectML engines."""
+        if self._det_engine is not None and self._rec_engine is not None:
+            return
+
+        base_cfg, default_models_dir, text_det_cls, text_rec_cls, omegaconf_cls = (
+            self._load_rapidocr_base_cfg()
+        )
         from src.backend.config import Settings
         from src.backend.detection.downloader import ensure_ocr_model_files
 
         settings = Settings()
-        extra_kwargs: dict[str, Any] = {}
-
-        if target_lang in ("ja", "ko"):
-            model_path_setting = (
-                settings.inkshift_local_ocr_ja_model_path
-                if target_lang == "ja"
-                else settings.inkshift_local_ocr_ko_model_path
+        provider = self._execution_provider_override or settings.inkshift_local_execution_provider
+        det_path = ensure_ocr_model_files(
+            "det",
+            dest_path=settings.inkshift_local_ocr_det_model_path,
+            auto_download=settings.inkshift_auto_download_models,
+        )
+        rec_path = ensure_ocr_model_files(
+            "rec",
+            dest_path=settings.inkshift_local_ocr_rec_model_path,
+            auto_download=settings.inkshift_auto_download_models,
+        )
+        if det_path is None or rec_path is None:
+            raise RuntimeError(
+                "PP-OCRv6_medium model weights missing and auto-download failed. "
+                "Run 'python scripts/download_models.py' to provision OCR weights."
             )
-            dict_path_setting = (
-                settings.inkshift_local_ocr_ja_dict_path
-                if target_lang == "ja"
-                else settings.inkshift_local_ocr_ko_dict_path
-            )
 
-            resolved_model = ensure_ocr_model_files(
-                target_lang,
-                dest_path=model_path_setting,
-                auto_download=settings.inkshift_auto_download_models,
-            )
-            if resolved_model is not None and resolved_model.exists():
-                extra_kwargs["rec_model_path"] = str(resolved_model)
-                if dict_path_setting and os.path.exists(dict_path_setting):
-                    extra_kwargs["rec_keys_path"] = str(dict_path_setting)
-                logger.info(
-                    "Initialized specialized RapidOCR engine for '%s' using model: %s",
-                    target_lang,
-                    resolved_model.name,
-                )
-            else:
-                logger.warning(
-                    "Specialized OCR model for '%s' not found or failed to download; falling back to default model.",
-                    target_lang,
-                )
-                default_engine = self._get_engine("default")
-                self._engines[target_lang] = default_engine
-                return default_engine
+        det_sess = self._create_ort_session(str(det_path), execution_provider=provider)
+        rec_sess = self._create_ort_session(str(rec_path), execution_provider=provider)
 
-        logger.debug("Initializing RapidOCR engine (lang=%s)...", target_lang)
-        try:
-            # Attempt DirectML acceleration on DirectX 12 hardware (disable cls for speed)
-            engine = rapid_cls(
-                det_use_dml=True,
-                cls_use_dml=True,
-                rec_use_dml=True,
-                use_cls=False,
-                **extra_kwargs,
-            )
-            logger.debug("RapidOCR (%s) initialized successfully with DirectML GPU acceleration.", target_lang)
-        except (RuntimeError, ValueError, OSError, AttributeError) as dml_exc:
-            logger.warning(
-                "RapidOCR DirectML (%s) initialization failed (%s); falling back to CPU.",
-                target_lang,
-                dml_exc,
-            )
-            engine = rapid_cls(use_cls=False, **extra_kwargs)
-            logger.debug("RapidOCR (%s) initialized successfully with CPU execution provider.", target_lang)
+        det_container = omegaconf_cls.to_container(base_cfg.Det, resolve=False)
+        det_container.update({
+            "limit_side_len": 1920,
+            "limit_type": "max",
+            "thresh": 0.2,
+            "box_thresh": 0.35,
+            "unclip_ratio": 1.8,
+            "engine_cfg": base_cfg.EngineConfig.onnxruntime,
+            "model_root_dir": default_models_dir,
+            "model_path": str(det_path),
+            "session": det_sess,
+        })
+        cfg_det = omegaconf_cls.create(det_container, flags={"allow_objects": True})
 
-        self._engines[target_lang] = engine
-        return engine
+        rec_container = omegaconf_cls.to_container(base_cfg.Rec, resolve=False)
+        rec_container.update({
+            "engine_cfg": base_cfg.EngineConfig.onnxruntime,
+            "model_root_dir": default_models_dir,
+            "model_path": str(rec_path),
+            "font_path": None,
+            "session": rec_sess,
+        })
+        cfg_rec = omegaconf_cls.create(rec_container, flags={"allow_objects": True})
 
-    async def recognize_batch(self, image_crops: list[bytes], lang: str = "zh") -> list[str]:
+        self._det_engine = text_det_cls(cfg_det)
+        self._rec_engine = text_rec_cls(cfg_rec)
+        logger.info(
+            "Initialized PP-OCRv6_medium (det=%s, rec=%s) with providers det=%s, rec=%s",
+            det_path.name,
+            rec_path.name,
+            det_sess.get_providers()[0],
+            rec_sess.get_providers()[0],
+        )
+
+    def _ensure_ko_rec(self) -> Any | None:
+        """Lazily initialize Korean PP-OCRv5 mobile recognizer on demand."""
+        if self._ko_rec_engine is not None:
+            return self._ko_rec_engine
+        if self._ko_load_attempted:
+            return None
+        self._ko_load_attempted = True
+
+        base_cfg, default_models_dir, _det_cls, text_rec_cls, omegaconf_cls = (
+            self._load_rapidocr_base_cfg()
+        )
+        from src.backend.config import Settings
+        from src.backend.detection.downloader import ensure_ocr_model_files
+
+        settings = Settings()
+        ko_path = ensure_ocr_model_files(
+            "ko",
+            dest_path=settings.inkshift_local_ocr_ko_model_path,
+            auto_download=settings.inkshift_auto_download_models,
+        )
+        if ko_path is None or not ko_path.exists():
+            logger.warning("Korean OCR weights unavailable; falling back to default PP-OCRv6 recognizer.")
+            return None
+
+        provider = self._execution_provider_override or settings.inkshift_local_execution_provider
+        ko_sess = self._create_ort_session(str(ko_path), execution_provider=provider)
+        ko_container = omegaconf_cls.to_container(base_cfg.Rec, resolve=False)
+        ko_container.update({
+            "engine_cfg": base_cfg.EngineConfig.onnxruntime,
+            "model_root_dir": default_models_dir,
+            "model_path": str(ko_path),
+            "font_path": None,
+            "session": ko_sess,
+        })
+        cfg_ko = omegaconf_cls.create(ko_container, flags={"allow_objects": True})
+        self._ko_rec_engine = text_rec_cls(cfg_ko)
+        self._engines["ko"] = self._ko_rec_engine
+        logger.info(
+            "Lazy-loaded Korean recognizer '%s' with provider=%s",
+            ko_path.name,
+            ko_sess.get_providers()[0],
+        )
+        return self._ko_rec_engine
+
+    def detect_text_boxes(self, image_bgr: np.ndarray[Any, Any]) -> list[np.ndarray[Any, Any]]:
+        """Run DBNet (PP-OCRv6_det_medium) once on a BGR image and return 4-point quads."""
+        self._ensure_det_and_rec()
+        if self._det_engine is None:
+            return []
+
+        h, w = image_bgr.shape[:2]
+        pad_h = max(0, 32 - h)
+        pad_w = max(0, 32 - w)
+        if pad_h > 0 or pad_w > 0:
+            input_img = cv2.copyMakeBorder(
+                image_bgr, 0, pad_h, 0, pad_w, cv2.BORDER_CONSTANT, value=(255, 255, 255)
+            )
+        else:
+            input_img = image_bgr
+
+        det_res = self._det_engine(input_img)
+        if det_res is None or det_res.boxes is None or len(det_res.boxes) == 0:
+            return []
+
+        quads: list[np.ndarray[Any, Any]] = []
+        for box in det_res.boxes:
+            pts = np.asarray(box, dtype=np.float32).copy()
+            pts[:, 0] = np.clip(pts[:, 0], 0.0, float(w))
+            pts[:, 1] = np.clip(pts[:, 1], 0.0, float(h))
+            quads.append(pts)
+        return quads
+
+    @staticmethod
+    def crop_quad(
+        image_bgr: np.ndarray[Any, Any],
+        quad: np.ndarray[Any, Any],
+    ) -> np.ndarray[Any, Any]:
+        """Extract perspective-rectified BGR crop (auto-rotates vertical quads 90 deg CCW)."""
+        pimg = importlib.import_module("rapidocr.utils.process_img")
+        cropped = pimg.get_rotate_crop_image(image_bgr, quad.astype(np.float32))
+        return np.asarray(cropped)
+
+    def recognize_crops(
+        self,
+        crops_bgr: list[np.ndarray[Any, Any]],
+        use_korean: bool = False,
+    ) -> list[tuple[str, float]]:
+        """Recognize a batch of BGR crops in one ONNX Runtime batch call."""
+        if not crops_bgr:
+            return []
+
+        self._ensure_det_and_rec()
+        rec_mod = importlib.import_module("rapidocr.ch_ppocr_rec.main")
+        text_rec_input_cls = rec_mod.TextRecInput
+
+        if use_korean:
+            rec_engine = self._ensure_ko_rec()
+            if rec_engine is None:
+                return [("", 0.0) for _ in crops_bgr]
+        else:
+            rec_engine = self._rec_engine
+
+        if rec_engine is None:
+            return [("", 0.0) for _ in crops_bgr]
+
+        valid_indices: list[int] = []
+        valid_crops: list[np.ndarray[Any, Any]] = []
+        for idx, crop in enumerate(crops_bgr):
+            if crop.size > 0 and crop.shape[0] > 0 and crop.shape[1] > 0:
+                valid_indices.append(idx)
+                valid_crops.append(crop)
+
+        results: list[tuple[str, float]] = [("", 0.0) for _ in crops_bgr]
+        if not valid_crops:
+            return results
+
+        rec_out = rec_engine(text_rec_input_cls(img=valid_crops))
+        txts = rec_out.txts or ()
+        scores = rec_out.scores or ()
+        for pos, orig_idx in enumerate(valid_indices):
+            txt = str(txts[pos]).strip() if pos < len(txts) else ""
+            conf = float(scores[pos]) if pos < len(scores) else 0.0
+            results[orig_idx] = (txt, conf)
+        return results
+
+    def recheck_ambiguous_square_bubble(
+        self,
+        image_bgr: np.ndarray[Any, Any],
+        pixel_box: tuple[int, int, int, int],
+        use_korean: bool = False,
+    ) -> list[tuple[np.ndarray[Any, Any], str, float]] | None:
+        """Rotate a tight square CJK bubble 90 deg CCW so vertical columns split horizontally cleanly."""
+        h_img, w_img = image_bgr.shape[:2]
+        y1 = max(0, pixel_box[0])
+        x1 = max(0, pixel_box[1])
+        y2 = min(h_img, pixel_box[2])
+        x2 = min(w_img, pixel_box[3])
+        crop_w = x2 - x1
+        crop_h = y2 - y1
+        if crop_w < 16 or crop_h < 16:
+            return None
+
+        bubble_bgr = image_bgr[y1:y2, x1:x2]
+        rot_bgr = cv2.rotate(bubble_bgr, cv2.ROTATE_90_COUNTERCLOCKWISE)
+        rot_quads = self.detect_text_boxes(rot_bgr)
+        if not rot_quads:
+            return None
+
+        rot_crops = [self.crop_quad(rot_bgr, q) for q in rot_quads]
+        recognized = self.recognize_crops(rot_crops, use_korean=use_korean)
+
+        mapped: list[tuple[np.ndarray[Any, Any], str, float]] = []
+        for quad, (txt, conf) in zip(rot_quads, recognized):
+            if not txt:
+                continue
+            # Invert ROTATE_90_COUNTERCLOCKWISE: x_orig = x1 + (crop_w - y_rot), y_orig = y1 + x_rot
+            orig_pts = np.empty_like(quad, dtype=np.float32)
+            orig_pts[:, 0] = np.clip(float(x1) + (float(crop_w) - quad[:, 1]), 0.0, float(w_img))
+            orig_pts[:, 1] = np.clip(float(y1) + quad[:, 0], 0.0, float(h_img))
+            mapped.append((orig_pts, txt, conf))
+
+        return mapped or None
+
+    def _run_full_image_lines(
+        self,
+        image_bgr: np.ndarray[Any, Any],
+        use_korean: bool = False,
+    ) -> list[list[Any]]:
+        """Execute split det -> crop -> rec and return legacy [[quad_list, text, score], ...] structure."""
+        quads = self.detect_text_boxes(image_bgr)
+        if not quads:
+            return []
+        crops = [self.crop_quad(image_bgr, q) for q in quads]
+        rec_res = self.recognize_crops(crops, use_korean=use_korean)
+        lines: list[list[Any]] = []
+        for quad, (txt, conf) in zip(quads, rec_res):
+            if txt:
+                lines.append([quad.tolist(), txt, conf])
+        return lines
+
+    def _get_legacy_mock_engine(self, lang: str = "default") -> Any | None:
+        """Return manually injected mock callable when unit tests bypass native split PP-OCRv6."""
+        target = self._normalize_lang(lang)
+        if target in self._engines:
+            return self._engines[target]
+        if "default" in self._engines:
+            return self._engines["default"]
+        return None
+
+    async def recognize_batch(self, image_crops: list[bytes], lang: str = "auto") -> list[str]:
         """Extract text from a list of cropped speech bubble images."""
         if not image_crops:
             return []
 
-        engine = self._get_engine(lang)
-        if engine is None:
-            raise RuntimeError(f"RapidOCR engine failed to initialize for language '{lang}'.")
+        mock_engine = self._get_legacy_mock_engine(lang)
+        use_split = mock_engine is None and self.supports_split_pipeline
+        use_korean = self._normalize_lang(lang) == "ko"
 
-        is_ja = self._normalize_lang(lang) == "ja"
         t0 = time.perf_counter()
         results: list[str] = []
-        for i, crop_bytes in enumerate(image_crops):
+        for crop_bytes in image_crops:
             if not crop_bytes:
                 results.append("")
                 continue
 
             try:
                 img = Image.open(io.BytesIO(crop_bytes)).convert("RGB")
+            except (OSError, ValueError):
+                results.append("")
+                continue
+
+            if use_split:
+                img_bgr = to_bgr_array(img)
+                ocr_result = self._run_full_image_lines(img_bgr, use_korean=use_korean)
+            else:
                 img_np = np.array(img)
-            except (OSError, ValueError) as img_err:
-                logger.debug("Crop [%d/%d] invalid image bytes: %s", i + 1, len(image_crops), img_err)
-                results.append("")
-                continue
-
-            # Run inference via RapidOCR
-            ocr_output = engine(img_np)
-            if not ocr_output or not isinstance(ocr_output, (list, tuple)):
-                results.append("")
-                continue
-
-            # RapidOCR returns (result, elapse_time)
-            ocr_result = ocr_output[0]
-            if not ocr_result or not isinstance(ocr_result, list):
-                results.append("")
-                continue
-
-            # Sort detected text lines vertically (top-to-bottom)
-            # Each entry in ocr_result is typically: [box_points, text, confidence]
-            try:
-                sorted_lines = sorted(
-                    ocr_result,
-                    key=lambda item: float(item[0][0][1]) if len(item) > 0 and len(item[0]) > 0 else 0.0,
+                ocr_output = mock_engine(img_np) if mock_engine is not None else None
+                ocr_result = (
+                    ocr_output[0]
+                    if ocr_output and isinstance(ocr_output, (list, tuple)) and isinstance(ocr_output[0], list)
+                    else []
                 )
-            except (IndexError, TypeError, ValueError):
-                sorted_lines = ocr_result
 
-            raw_lines: list[str] = []
-            for item in sorted_lines:
-                if len(item) >= 2 and item[1]:
-                    raw_lines.append(str(item[1]))
+            if not ocr_result:
+                results.append("")
+                continue
 
-            assembled = assemble_comic_lines(raw_lines)
-            if is_ja:
-                assembled = clean_japanese_text(assembled)
+            entries = [
+                entry
+                for item in ocr_result
+                if len(item) >= 2 and item[1]
+                and (entry := parse_ocr_entry(item[0], str(item[1]), float(item[2]) if len(item) > 2 else 1.0))
+                is not None
+            ]
+            if entries:
+                assembled, _direction = order_bubble_lines_bidirectional(entries)
+            else:
+                assembled = assemble_comic_lines([str(item[1]) for item in ocr_result if len(item) >= 2 and item[1]])
 
-            logger.debug(
-                "RapidOCR crop [%d/%d] (%dx%d px): detected %d lines -> '%s'",
-                i + 1,
-                len(image_crops),
-                img.width,
-                img.height,
-                len(raw_lines),
-                assembled[:40],
-            )
+            if self._normalize_lang(lang) in ("ja", "zh"):
+                assembled = clean_cjk_text(assembled)
             results.append(assembled)
 
         elapsed_ms = (time.perf_counter() - t0) * 1000
         logger.debug(
-            "RapidOCR batch completed: %d crops processed in %.2fms (transcribed %d/%d non-empty)",
+            "RapidOCR batch completed: %d crops processed in %.2fms (%d non-empty)",
             len(image_crops),
             elapsed_ms,
             sum(1 for r in results if r.strip()),
-            len(image_crops),
         )
         return results
 
@@ -250,73 +474,48 @@ class RapidOCRAdapter:
         work_items: Sequence[BubbleWorkItem],
         image_width: int,
         image_height: int,
-        lang: str = "zh",
+        lang: str = "auto",
     ) -> list[str]:
-        """Recognize text lines across uncropped page and map into work items via spatial intersection.
-
-        Bypasses per-bubble cropping, eliminating redundant text detection passes and orientation checks.
-
-        Args:
-            image_np: RGB numpy array or PIL Image of the uncropped page.
-            work_items: Ordered sequence of BubbleWorkItem instances with canonical [0, 1000] crop_box.
-            image_width: Original image width in pixels.
-            image_height: Original image height in pixels.
-            lang: Language identifier ('ja', 'ko', 'zh', 'en', etc.).
-
-        Returns:
-            List of transcribed text strings matching the exact order and length of work_items.
-        """
+        """Recognize text lines across uncropped page and map into work items via spatial containment."""
         if not work_items:
             return []
 
-        if isinstance(image_np, Image.Image):
-            img_array = np.array(image_np.convert("RGB"))
-        else:
-            img_array = image_np
-
-        engine = self._get_engine(lang)
-        if engine is None:
-            raise RuntimeError(f"RapidOCR engine failed to initialize for language '{lang}'.")
-
-        is_ja = self._normalize_lang(lang) == "ja"
+        mock_engine = self._get_legacy_mock_engine(lang)
         t0 = time.perf_counter()
-        ocr_output = engine(img_array)
-        ocr_result = ocr_output[0] if (ocr_output and ocr_output[0] is not None) else []
+
+        if mock_engine is not None or not self.supports_split_pipeline:
+            img_arr = np.array(image_np.convert("RGB")) if isinstance(image_np, Image.Image) else image_np
+            ocr_output = mock_engine(img_arr) if mock_engine is not None else None
+            ocr_result = ocr_output[0] if (ocr_output and ocr_output[0] is not None) else []
+        else:
+            img_bgr = to_bgr_array(image_np)
+            ocr_result = self._run_full_image_lines(
+                img_bgr, use_korean=(self._normalize_lang(lang) == "ko")
+            )
+
         if not isinstance(ocr_result, list):
             ocr_result = []
 
-        # Map each work item index to its contained text line candidates
         assigned_lines: dict[int, list[dict[str, Any]]] = {idx: [] for idx in range(len(work_items))}
-
-        # Canonical [0, 1000] bounding boxes for spatial containment check
         boxes_canonical = [item.crop_box for item in work_items]
-
-        # Margin in canonical [0, 1000] space to absorb slight boundary clip
         margin = 6
 
         for item in ocr_result:
             if not item or len(item) < 2:
                 continue
-            box_pts = item[0]
-            text = str(item[1]).strip()
-            conf = float(item[2]) if len(item) > 2 else 1.0
-            if not text:
+            entry = parse_ocr_entry(
+                item[0],
+                str(item[1]).strip(),
+                float(item[2]) if len(item) > 2 else 1.0,
+            )
+            if entry is None or not entry["text"]:
                 continue
 
-            # Centroid in physical pixels
-            pts_count = len(box_pts)
-            if pts_count == 0:
-                continue
-            cx_px = sum(float(pt[0]) for pt in box_pts) / float(pts_count)
-            cy_px = sum(float(pt[1]) for pt in box_pts) / float(pts_count)
-
-            # Normalized centroid in canonical [0, 1000] space
-            norm_cx = (cx_px / max(1, image_width)) * 1000.0
-            norm_cy = (cy_px / max(1, image_height)) * 1000.0
+            norm_cx = (float(entry["cx"]) / max(1, image_width)) * 1000.0
+            norm_cy = (float(entry["cy"]) / max(1, image_height)) * 1000.0
 
             best_idx = -1
             best_area = float("inf")
-
             for idx, (b_ymin, b_xmin, b_ymax, b_xmax) in enumerate(boxes_canonical):
                 if (
                     (b_ymin - margin) <= norm_cy <= (b_ymax + margin)
@@ -328,87 +527,58 @@ class RapidOCRAdapter:
                         best_idx = idx
 
             if best_idx >= 0:
-                assigned_lines[best_idx].append({
-                    "cy": cy_px,
-                    "cx": cx_px,
-                    "text": text,
-                    "conf": conf,
-                })
+                assigned_lines[best_idx].append(entry)
 
-        # Assemble lines per bubble in vertical reading order (top-to-bottom)
         results: list[str] = []
         for idx in range(len(work_items)):
-            lines_for_bubble = assigned_lines[idx]
-            if not lines_for_bubble:
-                results.append("")
-                continue
-
-            sorted_lines = sorted(lines_for_bubble, key=lambda l: l["cy"])
-            raw_text_lines = [l["text"] for l in sorted_lines]
-            assembled = assemble_comic_lines(raw_text_lines)
-            if is_ja:
-                assembled = clean_japanese_text(assembled)
+            assembled, _dir = order_bubble_lines_bidirectional(assigned_lines[idx])
             results.append(assembled)
 
         elapsed_ms = (time.perf_counter() - t0) * 1000
-        non_empty_count = sum(1 for r in results if r.strip())
         logger.debug(
             "RapidOCR full-page completed: %d text elements mapped to %d bubbles in %.2fms (%d non-empty)",
             len(ocr_result),
             len(work_items),
             elapsed_ms,
-            non_empty_count,
+            sum(1 for r in results if r.strip()),
         )
         return results
 
     async def recognize_direct_paragraphs(
         self,
-        image_np: np.ndarray | Image.Image,
+        image_np: np.ndarray[Any, Any] | Image.Image,
         image_width: int,
         image_height: int,
-        lang: str = "zh",
+        lang: str = "auto",
     ) -> list[ParagraphCluster]:
-        """Detect and recognize full-page text directly into clustered paragraphs without speech bubbles.
-
-        Args:
-            image_np: Source image as RGB numpy array or PIL Image.
-            image_width: Original image width in physical pixels.
-            image_height: Original image height in physical pixels.
-            lang: Target OCR language identifier ('ja', 'ko', 'zh', 'en').
-
-        Returns:
-            List of ParagraphCluster objects sorted in Top-to-Bottom, Left-to-Right reading order.
-        """
-        if isinstance(image_np, Image.Image):
-            img_array = np.array(image_np.convert("RGB"))
-        else:
-            img_array = image_np
-
-        engine = self._get_engine(lang)
-        if engine is None:
-            raise RuntimeError(f"RapidOCR engine failed to initialize for language '{lang}'.")
-
-        is_ja = self._normalize_lang(lang) == "ja"
+        """Detect and recognize full-page text directly into bi-directional clustered paragraphs."""
+        mock_engine = self._get_legacy_mock_engine(lang)
         t0 = time.perf_counter()
-        ocr_output = engine(img_array)
-        ocr_result = ocr_output[0] if (ocr_output and ocr_output[0] is not None) else []
+
+        if mock_engine is not None or not self.supports_split_pipeline:
+            img_arr = np.array(image_np.convert("RGB")) if isinstance(image_np, Image.Image) else image_np
+            ocr_output = mock_engine(img_arr) if mock_engine is not None else None
+            ocr_result = ocr_output[0] if (ocr_output and ocr_output[0] is not None) else []
+        else:
+            img_bgr = to_bgr_array(image_np)
+            ocr_result = self._run_full_image_lines(
+                img_bgr, use_korean=(self._normalize_lang(lang) == "ko")
+            )
+
         if not isinstance(ocr_result, list):
             ocr_result = []
 
-        paragraphs = cluster_lines_to_paragraphs(
+        paragraphs = cluster_lines_bidirectional(
             raw_ocr_lines=ocr_result,
             image_width=image_width,
             image_height=image_height,
-            is_ja=is_ja,
         )
 
         elapsed_ms = (time.perf_counter() - t0) * 1000
         logger.debug(
-            "RapidOCR direct paragraphs completed: %d lines clustered into %d paragraphs in %.2fms (lang=%s)",
+            "RapidOCR direct paragraphs completed: %d lines clustered into %d paragraphs in %.2fms",
             len(ocr_result),
             len(paragraphs),
             elapsed_ms,
-            lang,
         )
         return paragraphs
-

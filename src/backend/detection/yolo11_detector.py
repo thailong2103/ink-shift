@@ -15,9 +15,11 @@ from src.backend.detection.base import (
     DetectedBubble,
     DetectedPanel,
     DetectedText,
+    PageLayoutDetections,
 )
 from src.backend.detection.postprocess import (
     assign_child_texts_to_bubbles,
+    assign_child_texts_with_orphans,
     compute_letterbox_params,
     extract_rdp_polygon,
     invert_letterbox_coords,
@@ -44,6 +46,7 @@ class YOLO11Detector:
         bubble_threshold: float | None = None,
         text_threshold: float | None = None,
         panel_threshold: float | None = None,
+        sfx_threshold: float | None = None,
         auto_download: bool | None = None,
     ) -> None:
         settings = Settings()
@@ -79,6 +82,11 @@ class YOLO11Detector:
         self._panel_threshold = (
             panel_threshold
             if panel_threshold is not None
+            else confidence_threshold
+        )
+        self._sfx_threshold = (
+            sfx_threshold
+            if sfx_threshold is not None
             else confidence_threshold
         )
         self._iou_threshold = iou_threshold
@@ -194,7 +202,30 @@ class YOLO11Detector:
         original_width: int,
         original_height: int,
     ) -> tuple[list[DetectedBubble], list[DetectedPanel]]:
-        """Detect speech bubbles and manga panels simultaneously."""
+        """Detect speech bubbles and manga panels simultaneously (legacy pseudo-bubble mode)."""
+        layout = await self._detect_internal(
+            image_bytes, original_width, original_height, synthesize_orphan_bubbles=True
+        )
+        return layout.bubbles, layout.panels
+
+    async def detect_full_layout(
+        self,
+        image_bytes: bytes,
+        original_width: int,
+        original_height: int,
+    ) -> PageLayoutDetections:
+        """Detect speech bubbles, panels, SFX exclusion boxes, and orphan texts without prose fragmentation."""
+        return await self._detect_internal(
+            image_bytes, original_width, original_height, synthesize_orphan_bubbles=False
+        )
+
+    async def _detect_internal(
+        self,
+        image_bytes: bytes,
+        original_width: int,
+        original_height: int,
+        synthesize_orphan_bubbles: bool,
+    ) -> PageLayoutDetections:
         self._ensure_session()
 
         image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
@@ -213,7 +244,15 @@ class YOLO11Detector:
         input_name = session.get_inputs()[0].name
         outputs = session.run(None, {input_name: tensor})
 
-        return self._parse_outputs(outputs, scale, pad_x, pad_y, w, h)
+        return self._parse_full_outputs(
+            outputs,
+            scale,
+            pad_x,
+            pad_y,
+            w,
+            h,
+            synthesize_orphan_bubbles=synthesize_orphan_bubbles,
+        )
 
     def _parse_outputs(
         self,
@@ -224,13 +263,72 @@ class YOLO11Detector:
         orig_w: int,
         orig_h: int,
     ) -> tuple[list[DetectedBubble], list[DetectedPanel]]:
-        """Parse YOLO11 outputs: decode boxes, proto masks, filter SFX, and attach child texts."""
+        """Legacy wrapper parsing YOLO11 outputs with orphan pseudo-bubble synthesis enabled."""
+        layout = self._parse_full_outputs(
+            outputs,
+            scale,
+            pad_x,
+            pad_y,
+            orig_w,
+            orig_h,
+            synthesize_orphan_bubbles=True,
+        )
+        return layout.bubbles, layout.panels
+
+    def _nms_boxes_to_1000(
+        self,
+        candidates: list[list[int]],
+        scores: list[float],
+        threshold: float,
+        scale: float,
+        pad_x: int,
+        pad_y: int,
+        orig_w: int,
+        orig_h: int,
+    ) -> list[tuple[tuple[int, int, int, int], float]]:
+        """Run OpenCV NMS on [x, y, w, h] model-space boxes and convert to canonical [0, 1000]."""
+        if not candidates:
+            return []
+        indices = cv2.dnn.NMSBoxes(
+            bboxes=candidates,
+            scores=scores,
+            score_threshold=threshold,
+            nms_threshold=self._iou_threshold,
+        )
+        flat = [int(i) for i in np.asarray(indices).flatten()] if len(indices) > 0 else []
+        results: list[tuple[tuple[int, int, int, int], float]] = []
+        for idx in flat:
+            x, y, bw, bh = candidates[idx]
+            ox1, oy1 = invert_letterbox_coords(float(x), float(y), scale, pad_x, pad_y, orig_w, orig_h)
+            ox2, oy2 = invert_letterbox_coords(float(x + bw), float(y + bh), scale, pad_x, pad_y, orig_w, orig_h)
+            box_1000 = normalize_box_to_1000(
+                min(oy1, oy2),
+                min(ox1, ox2),
+                max(oy1, oy2),
+                max(ox1, ox2),
+                orig_w,
+                orig_h,
+            )
+            results.append((box_1000, round(scores[idx], 4)))
+        return results
+
+    def _parse_full_outputs(
+        self,
+        outputs: list[Any],
+        scale: float,
+        pad_x: int,
+        pad_y: int,
+        orig_w: int,
+        orig_h: int,
+        synthesize_orphan_bubbles: bool = False,
+    ) -> PageLayoutDetections:
+        """Parse YOLO11 outputs: decode bubbles, proto masks, panels, SFX exclusion boxes, and child texts."""
         if not outputs:
-            return [], []
+            return PageLayoutDetections(bubbles=[], panels=[], sfx_boxes=[], orphan_texts=[])
 
         raw_pred = np.asarray(outputs[0])
         if raw_pred.size == 0:
-            return [], []
+            return PageLayoutDetections(bubbles=[], panels=[], sfx_boxes=[], orphan_texts=[])
 
         # YOLO11 segmentation output0: (1, 40, num_anchors) -> Transpose to (num_anchors, 40)
         if raw_pred.ndim == 3:
@@ -241,7 +339,7 @@ class YOLO11Detector:
         _num_anchors, num_features = raw_pred.shape
         if num_features < 8:
             logger.warning("Unexpected YOLO11 output feature dimension: %d", num_features)
-            return [], []
+            return PageLayoutDetections(bubbles=[], panels=[], sfx_boxes=[], orphan_texts=[])
 
         # Prototype masks: output1 shape (1, 32, 256, 256) -> (32, 256, 256)
         protos: np.ndarray[Any, np.dtype[np.float32]] | None = None
@@ -252,28 +350,27 @@ class YOLO11Detector:
             if raw_protos.ndim == 3 and raw_protos.shape[0] == 32:
                 protos = raw_protos.astype(np.float32)
 
-        # Classes: 0: bubble, 1: panel, 2: sfx (ignored), 3: text
-        # Filter candidate bounding boxes per class
+        # Classes: 0: bubble, 1: panel, 2: sfx, 3: text
         bubble_candidates: list[list[int]] = []
-        bubble_scores: list[float]
+        bubble_scores: list[float] = []
         bubble_coeffs: list[np.ndarray[Any, np.dtype[np.float32]]] = []
         bubble_boxes_model: list[tuple[float, float, float, float]] = []
 
         panel_candidates: list[list[int]] = []
         panel_scores: list[float] = []
 
+        sfx_candidates: list[list[int]] = []
+        sfx_scores: list[float] = []
+
         text_candidates: list[list[int]] = []
         text_scores: list[float] = []
-
-        bubble_scores = []
 
         for row in raw_pred:
             cx, cy, w, h = float(row[0]), float(row[1]), float(row[2]), float(row[3])
             score_bubble = float(row[4])
             score_panel = float(row[5])
+            score_sfx = float(row[6]) if num_features > 6 else 0.0
             score_text = float(row[7]) if num_features > 7 else 0.0
-
-            # Discard class 2 (sfx) unconditionally per ADR-007
 
             bx1 = cx - w / 2.0
             by1 = cy - h / 2.0
@@ -293,21 +390,27 @@ class YOLO11Detector:
                 panel_candidates.append(box_nms)
                 panel_scores.append(score_panel)
 
+            if score_sfx >= self._sfx_threshold:
+                sfx_candidates.append(box_nms)
+                sfx_scores.append(score_sfx)
+
             if score_text >= self._text_threshold:
                 text_candidates.append(box_nms)
                 text_scores.append(score_text)
 
         logger.debug(
-            "YOLO11 raw candidates (bubble_th=%.2f, text_th=%.2f, panel_th=%.2f): bubbles=%d, panels=%d, texts=%d (sfx dropped)",
+            "YOLO11 raw candidates (bubble_th=%.2f, text_th=%.2f, panel_th=%.2f, sfx_th=%.2f): bubbles=%d, panels=%d, sfx=%d, texts=%d",
             self._bubble_threshold,
             self._text_threshold,
             self._panel_threshold,
+            self._sfx_threshold,
             len(bubble_candidates),
             len(panel_candidates),
+            len(sfx_candidates),
             len(text_candidates),
         )
 
-        # 1. NMS for bubbles
+        # 1. NMS for bubbles (preserves proto-mask coefficients per index)
         kept_bubbles: list[DetectedBubble] = []
         if bubble_candidates:
             indices_b = cv2.dnn.NMSBoxes(
@@ -326,19 +429,16 @@ class YOLO11Detector:
                 orig_x1, orig_y1 = invert_letterbox_coords(bx1, by1, scale, pad_x, pad_y, orig_w, orig_h)
                 orig_x2, orig_y2 = invert_letterbox_coords(bx2, by2, scale, pad_x, pad_y, orig_w, orig_h)
 
-                ymin_px = min(orig_y1, orig_y2)
-                xmin_px = min(orig_x1, orig_x2)
-                ymax_px = max(orig_y1, orig_y2)
-                xmax_px = max(orig_x1, orig_x2)
+                box_1000 = normalize_box_to_1000(
+                    min(orig_y1, orig_y2),
+                    min(orig_x1, orig_x2),
+                    max(orig_y1, orig_y2),
+                    max(orig_x1, orig_x2),
+                    orig_w,
+                    orig_h,
+                )
 
-                box_1000 = normalize_box_to_1000(ymin_px, xmin_px, ymax_px, xmax_px, orig_w, orig_h)
-
-                # Decode RDP polygon from prototype masks
-                if (
-                    self._return_polygon
-                    and protos is not None
-                    and idx < len(bubble_coeffs)
-                ):
+                if self._return_polygon and protos is not None and idx < len(bubble_coeffs):
                     polygon = extract_rdp_polygon(
                         bubble_coeffs[idx],
                         protos,
@@ -352,81 +452,45 @@ class YOLO11Detector:
                 else:
                     polygon = [(0.0, 0.0), (100.0, 0.0), (100.0, 100.0), (0.0, 100.0)]
 
-                bubble_id = str(len(kept_bubbles) + 1)
                 kept_bubbles.append(
                     DetectedBubble(
-                        id=bubble_id,
+                        id=str(len(kept_bubbles) + 1),
                         box_2d=box_1000,
                         polygon=polygon,
                         confidence=round(score, 4),
                     )
                 )
 
-        # 2. NMS for texts
-        kept_texts: list[DetectedText] = []
-        if text_candidates:
-            indices_t = cv2.dnn.NMSBoxes(
-                bboxes=text_candidates,
-                scores=text_scores,
-                score_threshold=self._text_threshold,
-                nms_threshold=self._iou_threshold,
+        # 2. NMS for texts, panels, and SFX exclusion mask
+        kept_texts = [
+            DetectedText(box_2d=box, confidence=conf)
+            for box, conf in self._nms_boxes_to_1000(
+                text_candidates, text_scores, self._text_threshold, scale, pad_x, pad_y, orig_w, orig_h
             )
-            text_indices = [int(i) for i in np.asarray(indices_t).flatten()] if len(indices_t) > 0 else []
-
-            for idx in text_indices:
-                score = text_scores[idx]
-                tx, ty, tw, th = text_candidates[idx]
-                tx1, ty1 = float(tx), float(ty)
-                tx2, ty2 = float(tx + tw), float(ty + th)
-
-                orig_x1, orig_y1 = invert_letterbox_coords(tx1, ty1, scale, pad_x, pad_y, orig_w, orig_h)
-                orig_x2, orig_y2 = invert_letterbox_coords(tx2, ty2, scale, pad_x, pad_y, orig_w, orig_h)
-
-                box_1000 = normalize_box_to_1000(
-                    min(orig_y1, orig_y2),
-                    min(orig_x1, orig_x2),
-                    max(orig_y1, orig_y2),
-                    max(orig_x1, orig_x2),
-                    orig_w,
-                    orig_h,
-                )
-                kept_texts.append(DetectedText(box_2d=box_1000, confidence=round(score, 4)))
-
-        # 3. NMS for panels
-        kept_panels: list[DetectedPanel] = []
-        if panel_candidates:
-            indices_p = cv2.dnn.NMSBoxes(
-                bboxes=panel_candidates,
-                scores=panel_scores,
-                score_threshold=self._panel_threshold,
-                nms_threshold=self._iou_threshold,
+        ]
+        kept_panels = [
+            DetectedPanel(box_2d=box, confidence=conf)
+            for box, conf in self._nms_boxes_to_1000(
+                panel_candidates, panel_scores, self._panel_threshold, scale, pad_x, pad_y, orig_w, orig_h
             )
+        ]
+        kept_sfx = [
+            box
+            for box, _conf in self._nms_boxes_to_1000(
+                sfx_candidates, sfx_scores, self._sfx_threshold, scale, pad_x, pad_y, orig_w, orig_h
+            )
+        ]
 
-            panel_indices = [int(i) for i in np.asarray(indices_p).flatten()] if len(indices_p) > 0 else []
+        # 3. Assign child texts to bubbles (optionally keeping orphans separate for hybrid clustering)
+        if synthesize_orphan_bubbles:
+            bubbles_with_texts = assign_child_texts_to_bubbles(
+                kept_bubbles, kept_texts, synthesize_orphan_bubbles=True
+            )
+            orphan_texts: list[DetectedText] = []
+        else:
+            bubbles_with_texts, orphan_texts = assign_child_texts_with_orphans(kept_bubbles, kept_texts)
 
-            for idx in panel_indices:
-                score = panel_scores[idx]
-                px, py, pw, ph = panel_candidates[idx]
-                px1, py1 = float(px), float(py)
-                px2, py2 = float(px + pw), float(py + ph)
-
-                orig_x1, orig_y1 = invert_letterbox_coords(px1, py1, scale, pad_x, pad_y, orig_w, orig_h)
-                orig_x2, orig_y2 = invert_letterbox_coords(px2, py2, scale, pad_x, pad_y, orig_w, orig_h)
-
-                box_1000 = normalize_box_to_1000(
-                    min(orig_y1, orig_y2),
-                    min(orig_x1, orig_x2),
-                    max(orig_y1, orig_y2),
-                    max(orig_x1, orig_x2),
-                    orig_w,
-                    orig_h,
-                )
-                kept_panels.append(DetectedPanel(box_2d=box_1000, confidence=round(score, 4)))
-
-        # 4. Assign child texts to bubbles
-        bubbles_with_texts = assign_child_texts_to_bubbles(kept_bubbles, kept_texts)
-
-        # 5. 2-Tier Japanese Manga Reading Order Sorting (Panel -> In-Panel 1.5Y - X)
+        # 4. 2-Tier Japanese Manga Reading Order Sorting (Panel -> In-Panel 1.5Y - X)
         final_bubbles = MangaReadingOrderSorter.sort(bubbles_with_texts, kept_panels)
 
         logger.debug(
@@ -434,8 +498,15 @@ class YOLO11Detector:
                 "YoloDetectionsFinal",
                 bubbles=len(final_bubbles),
                 panels=len(kept_panels),
+                sfx=len(kept_sfx),
                 texts=len(kept_texts),
+                orphans=len(orphan_texts),
             )
         )
 
-        return final_bubbles, kept_panels
+        return PageLayoutDetections(
+            bubbles=final_bubbles,
+            panels=kept_panels,
+            sfx_boxes=kept_sfx,
+            orphan_texts=orphan_texts,
+        )

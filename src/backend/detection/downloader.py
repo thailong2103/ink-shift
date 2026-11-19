@@ -1,7 +1,8 @@
 """Automated model weights downloader and cache manager for InkShift.
 
-Handles streaming download of ONNX model weights (e.g. YOLO11s-seg from Hugging Face)
-with progress tracking, atomic write via temporary file, and size verification.
+Handles streaming download of ONNX model weights (YOLO11s-seg, PP-OCRv6 medium det/rec,
+and Korean PP-OCRv5 mobile rec) with progress tracking, atomic write via temporary file,
+and size verification.
 """
 
 from __future__ import annotations
@@ -17,11 +18,20 @@ logger = logging.getLogger("inkshift.backend.downloader")
 YOLO11_MODEL_URL = "https://huggingface.co/chiqui7/yolo11-manga-seg/resolve/main/yolo11s-seg.onnx"
 YOLO11_MIN_SIZE_BYTES = 38_000_000  # ~39.3 MB
 
-OCR_JA_MODEL_URL = "https://huggingface.co/breezedeus/cnocr-ppocr-japan_PP-OCRv3/resolve/main/japan_PP-OCRv3_rec_infer.onnx"
-OCR_JA_MIN_SIZE_BYTES = 9_000_000  # ~10.1 MB
+OCR_DET_MODEL_URL = (
+    "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.9.1/onnx/PP-OCRv6/det/PP-OCRv6_det_medium.onnx"
+)
+OCR_DET_MIN_SIZE_BYTES = 58_000_000  # ~62.1 MB
 
-OCR_KO_MODEL_URL = "https://huggingface.co/breezedeus/cnocr-ppocr-korean_PP-OCRv3/resolve/main/korean_PP-OCRv3_rec_infer.onnx"
-OCR_KO_MIN_SIZE_BYTES = 9_000_000  # ~9.9 MB
+OCR_REC_MODEL_URL = (
+    "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.9.1/onnx/PP-OCRv6/rec/PP-OCRv6_rec_medium.onnx"
+)
+OCR_REC_MIN_SIZE_BYTES = 72_000_000  # ~76.6 MB
+
+OCR_KO_MODEL_URL = (
+    "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.9.1/onnx/PP-OCRv5/rec/korean_PP-OCRv5_rec_mobile.onnx"
+)
+OCR_KO_MIN_SIZE_BYTES = 12_000_000  # ~13.5 MB
 
 
 def format_bytes(num_bytes: int) -> str:
@@ -43,7 +53,7 @@ def ensure_model_file(
 
     Args:
         dest_path: Target local file path for model weights.
-        url: Remote download URL (default: Hugging Face YOLO11s-seg ONNX).
+        url: Remote download URL.
         min_size: Minimum expected file size in bytes to guard against partial downloads.
         force: If True, re-downloads even if file already exists.
         show_progress: If True, prints download progress to console.
@@ -77,7 +87,7 @@ def ensure_model_file(
     temp_path = path.with_suffix(path.suffix + ".tmp")
 
     print(f"\n[InkShift:AutoDownload] Model weights not found: {path.name}")
-    print(f"[InkShift:AutoDownload] Downloading from Hugging Face: {url}")
+    print(f"[InkShift:AutoDownload] Downloading from remote: {url}")
     print(f"[InkShift:AutoDownload] Destination: {path}")
 
     start_time = time.time()
@@ -152,13 +162,18 @@ def ensure_ocr_model_files(
     dest_path: str | Path | None = None,
     auto_download: bool = True,
 ) -> Path | None:
-    """Ensure that specialized OCR ONNX model weights exist for the requested language.
+    """Ensure that ONNX OCR model weights exist for the requested stage or language.
+
+    Supports:
+    - 'det' / 'ppocrv6_det': PP-OCRv6_det_medium.onnx
+    - 'rec' / 'ppocrv6_rec' / 'default' / 'ja' / 'zh' / 'en' / 'auto': PP-OCRv6_rec_medium.onnx
+    - 'ko' / 'korean': korean_PP-OCRv5_rec_mobile.onnx
 
     If missing and auto_download is True, attempts atomic streaming download.
     If download fails or offline, logs a warning and returns None for graceful fallback.
 
     Args:
-        language: Language code ('ja', 'japanese', 'ko', 'korean').
+        language: Stage or language identifier ('det', 'rec', 'default', 'ja', 'zh', 'en', 'auto', 'ko', 'korean').
         dest_path: Optional explicit local path for the model weights file.
         auto_download: Whether to attempt remote download if file is missing.
 
@@ -166,14 +181,15 @@ def ensure_ocr_model_files(
         Resolved Path to the validated model file, or None if unavailable.
     """
     normalized = language.lower().strip()
-    if normalized in ("ja", "japanese"):
-        url = OCR_JA_MODEL_URL
-        min_size = OCR_JA_MIN_SIZE_BYTES
-        filename = "japan_PP-OCRv3_rec_infer.onnx"
+    if normalized in ("det", "ppocrv6_det"):
+        url = OCR_DET_MODEL_URL
+        min_size = OCR_DET_MIN_SIZE_BYTES
+    elif normalized in ("rec", "ppocrv6_rec", "default", "ja", "japanese", "zh", "chinese", "en", "english", "auto"):
+        url = OCR_REC_MODEL_URL
+        min_size = OCR_REC_MIN_SIZE_BYTES
     elif normalized in ("ko", "korean"):
         url = OCR_KO_MODEL_URL
         min_size = OCR_KO_MIN_SIZE_BYTES
-        filename = "korean_PP-OCRv3_rec_infer.onnx"
     else:
         return None
 
@@ -181,7 +197,12 @@ def ensure_ocr_model_files(
 
     settings = Settings()
     if dest_path is None:
-        target_path = Path(settings.inkshift_local_model_dir) / filename
+        if normalized in ("det", "ppocrv6_det"):
+            target_path = Path(settings.inkshift_local_ocr_det_model_path).resolve()
+        elif normalized in ("ko", "korean"):
+            target_path = Path(settings.inkshift_local_ocr_ko_model_path).resolve()
+        else:
+            target_path = Path(settings.inkshift_local_ocr_rec_model_path).resolve()
     else:
         target_path = Path(dest_path).resolve()
 
@@ -190,7 +211,7 @@ def ensure_ocr_model_files(
 
     if not auto_download or not settings.inkshift_auto_download_models:
         logger.warning(
-            "OCR model weights missing for language '%s' at %s (auto-download disabled).",
+            "OCR model weights missing for '%s' at %s (auto-download disabled).",
             language,
             target_path,
         )
@@ -198,16 +219,15 @@ def ensure_ocr_model_files(
 
     try:
         logger.info(
-            "Auto-downloading specialized OCR model weights for language '%s' to %s...",
+            "Auto-downloading OCR model weights for '%s' to %s...",
             language,
             target_path,
         )
         return ensure_model_file(dest_path=target_path, url=url, min_size=min_size)
-    except Exception as exc:
+    except (RuntimeError, OSError, urllib.error.URLError, ValueError) as exc:
         logger.warning(
-            "Could not download OCR model for language '%s' (%s). Gracefully falling back to default model.",
+            "Could not download OCR model for '%s' (%s). Gracefully falling back.",
             language,
             exc,
         )
         return None
-

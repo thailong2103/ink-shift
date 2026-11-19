@@ -770,3 +770,134 @@ async def test_local_engine_text_reader_mode_bypasses_yolo_and_clusters_paragrap
     assert resp.blocks[1].direction == "horizontal"
     assert resp.blocks[1].translated_text == "dịch_自衛のための戦争さえ放棄し、平和的生存権の実現を率先する。"
 
+
+
+# ---------------------------------------------------------------------------
+# Phase 46 / ADR-019: Unified Hybrid Pipeline (Bubbles + Residual Prose) Tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_local_engine_unified_hybrid_mixed_bubbles_and_prose() -> None:
+    """Unified hybrid translates curved speech bubbles AND residual prose paragraphs in one pass."""
+    from unittest.mock import patch
+
+    from src.backend.detection.base import PageLayoutDetections
+    from src.backend.engines.local.ocr.router import HybridOCRResult
+    from src.backend.engines.local.ocr.text_assembler import ParagraphCluster
+
+    bubble_poly = [(10.0, 5.0), (90.0, 5.0), (90.0, 95.0), (10.0, 95.0)]
+    bubble = DetectedBubble(
+        id="1",
+        box_2d=(100, 600, 300, 900),
+        polygon=bubble_poly,
+        confidence=0.96,
+    )
+    sfx_mask = [(400, 100, 500, 300)]
+
+    class HybridDetectorStub(StubDetector):
+        async def detect_full_layout(
+            self, image_bytes: bytes, original_width: int, original_height: int
+        ) -> PageLayoutDetections:
+            self.call_count += 1
+            return PageLayoutDetections(
+                bubbles=[bubble],
+                panels=[],
+                sfx_boxes=sfx_mask,
+                orphan_texts=[],
+            )
+
+    prose_cluster = ParagraphCluster(
+        box_2d=(650, 100, 820, 850),
+        pixel_box=(390, 40, 492, 340),
+        text="Meanwhile, back at the headquarters...",
+        confidence=0.97,
+        direction="horizontal",
+    )
+
+    router = OCRRouter(rapid_ocr=StubOCR("rapidocr"))
+    captured_source_langs: list[str] = []
+
+    class RecordingTranslator(StubTranslator):
+        async def translate_batch(
+            self,
+            texts: list[str],
+            source_lang: str,
+            target_lang: str,
+            model: str | None = None,
+            custom_prompt: str | None = None,
+        ) -> list[str]:
+            captured_source_langs.append(source_lang)
+            return await super().translate_batch(texts, source_lang, target_lang, model, custom_prompt)
+
+    translator = RecordingTranslator(prefix="vi_")
+    engine = LocalTranslationEngine(
+        detector=HybridDetectorStub(),
+        ocr_router=router,
+        translator=translator,
+        name="local",
+    )
+
+    hybrid_stub_output = HybridOCRResult(
+        bubble_texts=["こんにちは！"],
+        residual_clusters=[prose_cluster],
+        detected_source_lang="ja",
+        ocr_engine_used="rapidocr",
+        page_dominant_vertical=False,
+    )
+
+    with patch.object(router, "recognize_hybrid_page", return_value=hybrid_stub_output) as mock_hybrid:
+        req = TranslationRequest(image=make_test_image_base64(), engine="local", target_lang="vi")
+        resp = await engine.translate(req)
+
+    assert mock_hybrid.call_count == 1
+    assert mock_hybrid.call_args.kwargs["sfx_boxes"] == sfx_mask
+    assert translator.call_count == 1
+    assert captured_source_langs == ["ja"]
+    assert len(resp.blocks) == 2
+
+    bubble_blk = [b for b in resp.blocks if b.id.startswith("blk_")][0]
+    prose_blk = [b for b in resp.blocks if b.id.startswith("text_p_")][0]
+
+    assert bubble_blk.polygon == bubble_poly
+    assert bubble_blk.translated_text == "vi_こんにちは！"
+    assert prose_blk.polygon is None
+    assert prose_blk.direction == "horizontal"
+    assert prose_blk.box == (650, 100, 820, 850)
+    assert prose_blk.translated_text == "vi_Meanwhile, back at the headquarters..."
+
+
+@pytest.mark.asyncio
+async def test_local_engine_unified_hybrid_zero_bubbles_still_translates_prose() -> None:
+    """When YOLO11 finds 0 bubbles on a novel/narration page, Unified Hybrid still translates residual prose."""
+    from src.backend.engines.local.ocr.text_assembler import ParagraphCluster
+
+    detector = StubDetector([])
+    cluster = ParagraphCluster(
+        box_2d=(100, 100, 260, 900),
+        pixel_box=(60, 40, 156, 360),
+        text="这是一段自动识别的正文内容。",
+        confidence=0.99,
+        direction="horizontal",
+    )
+
+    class StubProseRapid(StubOCR):
+        async def recognize_direct_paragraphs(self, *args: Any, **kwargs: Any) -> list[ParagraphCluster]:
+            return [cluster]
+
+    router = OCRRouter(rapid_ocr=StubProseRapid("rapidocr"))
+    translator = StubTranslator(prefix="dịch_")
+    engine = LocalTranslationEngine(
+        detector=detector,
+        ocr_router=router,
+        translator=translator,
+        name="local",
+    )
+
+    req = TranslationRequest(image=make_test_image_base64(), engine="local", target_lang="vi")
+    resp = await engine.translate(req)
+
+    assert len(resp.blocks) == 1
+    assert resp.blocks[0].id == "text_p_1"
+    assert resp.blocks[0].polygon is None
+    assert resp.blocks[0].translated_text == "dịch_这是一段自动识别的正文内容。"

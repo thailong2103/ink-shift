@@ -96,11 +96,11 @@ async def test_rapid_ocr_empty_batch() -> None:
 
 @pytest.mark.asyncio
 async def test_rapid_ocr_engine_initialization_error(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Missing dependency must raise RuntimeError during inference."""
+    """Missing rapidocr dependency must raise RuntimeError during inference."""
     adapter = RapidOCRAdapter(rapidocr_engine=None)
 
     def failing_import(name: str, *args: Any, **kwargs: Any) -> Any:
-        if name == "rapidocr_onnxruntime":
+        if name == "rapidocr":
             raise ImportError("Simulated missing package")
         import importlib
         return importlib.__import__(name, *args, **kwargs)
@@ -283,59 +283,98 @@ async def test_rapid_ocr_japanese_text_cleaning() -> None:
 
 
 @pytest.mark.asyncio
-async def test_rapid_ocr_offline_model_fallback(tmp_path: Path) -> None:
-    """If specialized model is missing and auto-download fails, fall back to default."""
+async def test_rapid_ocr_offline_korean_fallback() -> None:
+    """If Korean model is missing and auto-download fails, _ensure_ko_rec returns None gracefully."""
     from unittest.mock import patch
 
-    mock_default = MockRapidOCREngine([[[[0, 0], [10, 0], [10, 10], [0, 10]], "FALLBACK", 0.9]])
-    adapter = RapidOCRAdapter(rapidocr_engine=mock_default)
+    adapter = RapidOCRAdapter(rapidocr_engine=None)
 
     with patch("src.backend.detection.downloader.ensure_ocr_model_files", return_value=None):
-        engine = adapter._get_engine("ja")
-        # Should gracefully fall back to default engine
-        assert engine == mock_default
-        assert adapter._engines["ja"] == mock_default
+        ko_engine = adapter._ensure_ko_rec()
+        assert ko_engine is None
 
 
 @pytest.mark.asyncio
-async def test_rapid_ocr_language_pool_isolation_no_poisoning(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Initializing default engine first must NOT poison or overwrite subsequent Japanese engine."""
+async def test_rapid_ocr_create_ort_session_directml_with_cpu_fallback() -> None:
+    """_create_ort_session requests DmlExecutionProvider first and falls back cleanly on error."""
     from unittest.mock import MagicMock, patch
 
-    engine_created_count = 0
+    dummy_cpu_sess = MagicMock()
+    dummy_cpu_sess.get_providers.return_value = ["CPUExecutionProvider"]
 
-    def mock_rapid_cls(**kwargs: Any) -> Any:
-        nonlocal engine_created_count
-        engine_created_count += 1
-        m = MagicMock()
-        m.engine_id = f"engine_{engine_created_count}"
-        m.kwargs = kwargs
-        return m
+    calls: list[list[Any]] = []
 
-    mock_model_file = tmp_path / "japan_PP-OCRv3_rec_infer.onnx"
-    mock_model_file.write_bytes(b"dummy_weights")
-    mock_dict_file = tmp_path / "japan_dict.txt"
-    mock_dict_file.write_text("dummy_dict", encoding="utf-8")
-    monkeypatch.setenv("INKSHIFT_LOCAL_OCR_JA_DICT_PATH", str(mock_dict_file))
+    def fake_inference_session(path: str, providers: list[Any]) -> Any:
+        calls.append(providers)
+        if any(isinstance(p, tuple) and p[0] == "DmlExecutionProvider" for p in providers):
+            raise RuntimeError("DirectML unavailable on CI host")
+        return dummy_cpu_sess
+
+    with patch("onnxruntime.InferenceSession", side_effect=fake_inference_session):
+        sess = RapidOCRAdapter._create_ort_session("dummy.onnx", execution_provider="directml")
+        assert sess is dummy_cpu_sess
+        assert len(calls) == 2
+        assert calls[0][0][0] == "DmlExecutionProvider"
+        assert calls[1] == ["CPUExecutionProvider"]
+
+
+@pytest.mark.asyncio
+async def test_rapid_ocr_vertical_rtl_sorting_in_full_page() -> None:
+    """recognize_full_page orders vertical CJK columns Right-to-Left inside bubbles."""
+    b1 = DetectedBubble(id="b1", box_2d=(100, 100, 500, 400))
+    item1 = BubbleWorkItem(
+        crop_box=(100, 100, 500, 400),
+        render_box=(100, 100, 500, 400),
+        parent_bubble=b1,
+        is_child=False,
+        child_index=0,
+        confidence=0.99,
+    )
+    mock_results = [
+        # Left vertical column (x=150..185, h=150)
+        [[[150.0, 150.0], [185.0, 150.0], [185.0, 300.0], [150.0, 300.0]], "第二列", 0.97],
+        # Right vertical column (x=280..315, h=150) -> MUST be read FIRST!
+        [[[280.0, 150.0], [315.0, 150.0], [315.0, 300.0], [280.0, 300.0]], "第一列", 0.99],
+    ]
+    adapter = RapidOCRAdapter(rapidocr_engine=MockRapidOCREngine(mock_results))
+    results = await adapter.recognize_full_page(
+        image_np=Image.new("RGB", (1000, 1000), color="white"),
+        work_items=[item1],
+        image_width=1000,
+        image_height=1000,
+    )
+    assert results == ["第一列第二列"]
+
+
+@pytest.mark.asyncio
+async def test_rapid_ocr_recheck_ambiguous_square_bubble_maps_coords() -> None:
+    """recheck_ambiguous_square_bubble rotates 90 CCW and maps boxes back into page pixel space."""
+    import numpy as np
 
     adapter = RapidOCRAdapter(rapidocr_engine=None)
-    assert adapter._custom_engine_provided is False
+    # 100x100 bubble crop inside a 500x500 page at [ymin=100, xmin=200, ymax=200, xmax=300]
+    rot_box = np.array([[10.0, 5.0], [80.0, 5.0], [80.0, 25.0], [10.0, 25.0]], dtype=np.float32)
 
-    with patch("rapidocr_onnxruntime.RapidOCR", side_effect=mock_rapid_cls), \
-         patch("src.backend.detection.downloader.ensure_ocr_model_files", return_value=mock_model_file):
-        
-        # 1. First warm up default engine
-        default_engine = adapter._get_engine("default")
-        assert default_engine.engine_id == "engine_1"
-        assert "default" in adapter._engines
+    from unittest.mock import patch
 
-        # 2. Then retrieve Japanese engine
-        ja_engine = adapter._get_engine("ja")
-        assert ja_engine.engine_id == "engine_2"
-        assert ja_engine != default_engine
-        assert adapter._engines["ja"] != adapter._engines["default"]
-        assert ja_engine.kwargs.get("rec_model_path") == str(mock_model_file)
-        assert ja_engine.kwargs.get("rec_keys_path") == str(mock_dict_file)
+    with (
+        patch.object(adapter, "detect_text_boxes", return_value=[rot_box]),
+        patch.object(adapter, "crop_quad", return_value=np.zeros((20, 70, 3), dtype=np.uint8)),
+        patch.object(adapter, "recognize_crops", return_value=[("第一列", 0.98)]),
+    ):
+        page_bgr = np.full((500, 500, 3), 255, dtype=np.uint8)
+        mapped = adapter.recheck_ambiguous_square_bubble(page_bgr, (100, 200, 200, 300))
+        assert mapped is not None
+        assert len(mapped) == 1
+        quad_orig, txt, conf = mapped[0]
+        assert txt == "第一列"
+        assert conf == 0.98
+        # Bounding box in original space must lie inside (200..300, 100..200) and be vertical (h > w)
+        w_orig = float(quad_orig[:, 0].max() - quad_orig[:, 0].min())
+        h_orig = float(quad_orig[:, 1].max() - quad_orig[:, 1].min())
+        assert h_orig > w_orig
+        assert 200.0 <= float(quad_orig[:, 0].min()) <= float(quad_orig[:, 0].max()) <= 300.0
+        assert 100.0 <= float(quad_orig[:, 1].min()) <= float(quad_orig[:, 1].max()) <= 200.0
 
 
 

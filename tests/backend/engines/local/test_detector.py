@@ -397,6 +397,53 @@ async def test_yolo11_detector_with_mock_session() -> None:
     assert len(top_bubble.texts) == 1
     assert top_bubble.texts[0].confidence == 0.9
 
+    # Should gracefully preserve SFX boxes in detect_full_layout without fragmenting orphan texts
+    layout = await detector.detect_full_layout(image_bytes, original_width=800, original_height=1200)
+    assert len(layout.bubbles) == 2
+    assert len(layout.panels) == 1
+    assert len(layout.sfx_boxes) == 1
+    assert layout.orphan_texts == []
+
+
+@pytest.mark.asyncio
+async def test_yolo11_detector_full_layout_keeps_orphans_unfragmented() -> None:
+    """detect_full_layout must NOT synthesize fake pseudo-bubbles from orphan text blocks."""
+    raw_pred = np.zeros((40, 4), dtype=np.float32)
+
+    # Anchor 0: Bubble
+    raw_pred[0:4, 0] = [200.0, 200.0, 150.0, 150.0]
+    raw_pred[4, 0] = 0.90
+
+    # Anchor 1: Orphan text outside bubble
+    raw_pred[0:4, 1] = [700.0, 700.0, 200.0, 80.0]
+    raw_pred[7, 1] = 0.85
+
+    # Anchor 2: Another orphan text outside bubble
+    raw_pred[0:4, 2] = [700.0, 800.0, 200.0, 80.0]
+    raw_pred[7, 2] = 0.82
+
+    # Anchor 3: SFX box
+    raw_pred[0:4, 3] = [300.0, 700.0, 120.0, 120.0]
+    raw_pred[6, 3] = 0.91
+
+    mock_session = MockYOLO11Session(np.expand_dims(raw_pred, axis=0))
+    detector = YOLO11Detector(onnx_session=mock_session, confidence_threshold=0.5)
+
+    dummy_img = Image.new("RGB", (1024, 1024), color="white")
+    buf = io.BytesIO()
+    dummy_img.save(buf, format="PNG")
+    img_bytes = buf.getvalue()
+
+    # Legacy detect_layout wraps orphans into pseudo-bubbles (1 + 2 = 3)
+    legacy_bubbles, _ = await detector.detect_layout(img_bytes, original_width=1024, original_height=1024)
+    assert len(legacy_bubbles) == 3
+
+    # Full layout keeps only genuine bubble (1), exposes orphans separately, preserves SFX box
+    layout = await detector.detect_full_layout(img_bytes, original_width=1024, original_height=1024)
+    assert len(layout.bubbles) == 1
+    assert len(layout.orphan_texts) == 2
+    assert len(layout.sfx_boxes) == 1
+
 
 @pytest.mark.asyncio
 async def test_yolo11_detector_class_specific_thresholds() -> None:

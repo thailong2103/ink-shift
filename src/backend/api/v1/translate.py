@@ -7,17 +7,18 @@ import base64
 import binascii
 import hashlib
 import heapq
+import inspect
 import io
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 from PIL import Image
 
 if TYPE_CHECKING:
-    from src.backend.detection.base import DetectedBubble
+    from src.backend.detection.base import DetectedBubble, PageLayoutDetections
 from src.backend.cache.sqlite_cache import TranslationCache, compute_prompt_hash
 from src.backend.config import Settings
 from src.backend.engines.base import BaseTranslationEngine
@@ -374,7 +375,10 @@ async def translate_page(
             if await request.is_disconnected():
                 return _disconnected_response()
             bubbles: list[DetectedBubble] | None = None
-            if target_engine_name in ("local", "cloud"):
+            layout: PageLayoutDetections | None = None
+
+            skip_yolo_legacy_text = target_engine_name == "local" and payload.reader_mode == "text"
+            if target_engine_name in ("local", "cloud") and not skip_yolo_legacy_text:
                 detector = getattr(request.app.state, "detector", None)
                 if detector is not None:
                     try:
@@ -382,11 +386,37 @@ async def translate_page(
                             w, h = pil_img.size
                     except (OSError, ValueError, TypeError):
                         w, h = 0, 0
-                    bubbles = await detector.detect(raw_bytes, w, h)
-                    logger.info(
-                        format_logfmt("OptionG1Detection", bubbles=len(bubbles), width=w, height=h)
+                    has_full_layout = target_engine_name == "local" and callable(
+                        getattr(type(detector), "detect_full_layout", None)
                     )
-            return await engine.translate(payload, bubbles=bubbles)
+                    if has_full_layout:
+                        layout = await detector.detect_full_layout(raw_bytes, w, h)
+                        bubbles = layout.bubbles
+                        logger.info(
+                            format_logfmt(
+                                "OptionG1Detection",
+                                bubbles=len(bubbles),
+                                sfx=len(layout.sfx_boxes),
+                                width=w,
+                                height=h,
+                            )
+                        )
+                    else:
+                        bubbles = await detector.detect(raw_bytes, w, h)
+                        logger.info(
+                            format_logfmt("OptionG1Detection", bubbles=len(bubbles), width=w, height=h)
+                        )
+
+            translate_kwargs: dict[str, Any] = {"bubbles": bubbles}
+            if layout is not None:
+                sig_params: Mapping[str, Any] = {}
+                try:
+                    sig_params = inspect.signature(engine.translate).parameters
+                except (ValueError, TypeError):
+                    sig_params = {}
+                if "layout" in sig_params:
+                    translate_kwargs["layout"] = layout
+            return await engine.translate(payload, **translate_kwargs)
 
         if target_engine_name == "local" and local_sem is not None:
             if isinstance(local_sem, PriorityLocalLock):

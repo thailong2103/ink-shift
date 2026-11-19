@@ -15,10 +15,12 @@ from src.backend.detection.base import (
     DetectedBubble,
     DetectedPanel,
     DetectedText,
+    PageLayoutDetections,
 )
 from src.backend.detection.downloader import ensure_model_file
 from src.backend.detection.postprocess import (
     assign_child_texts_to_bubbles,
+    assign_child_texts_with_orphans,
     compute_letterbox_params,
     crop_bubble_image,
     denormalize_box_from_1000,
@@ -42,9 +44,11 @@ __all__ = [
     "DetectedPanel",
     "DetectedText",
     "MangaReadingOrderSorter",
+    "PageLayoutDetections",
     "YOLO11Detector",
     "assemble_translated_blocks",
     "assign_child_texts_to_bubbles",
+    "assign_child_texts_with_orphans",
     "compute_letterbox_params",
     "compute_safe_render_box",
     "crop_bubble_image",

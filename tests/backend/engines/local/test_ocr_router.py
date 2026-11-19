@@ -537,3 +537,132 @@ async def test_ocr_router_recognize_routed_paragraphs() -> None:
     assert stub.last_lang == "ko"
 
 
+
+
+# ---------------------------------------------------------------------------
+# Phase 46 / ADR-019: Unified Hybrid Page OCR & Auto Korean Fallback Tests
+# ---------------------------------------------------------------------------
+
+
+def test_detect_page_language() -> None:
+    """detect_page_language returns accurate ISO code from Unicode script counts."""
+    router = OCRRouter(rapid_ocr=StubOCREngine("rapidocr"))
+    assert router.detect_page_language(["こんにちは", "助けて！"]) == "ja"
+    assert router.detect_page_language(["你好世界", "发生什么事"]) == "zh"
+    assert router.detect_page_language(["안녕하세요", "잠깐만요"]) == "ko"
+    assert router.detect_page_language(["HELLO WORLD", "WAIT HERE"]) == "en"
+    assert router.detect_page_language(["", "..."]) == "auto"
+
+
+@pytest.mark.asyncio
+async def test_recognize_hybrid_page_spatial_fusion_and_sfx_exclusion() -> None:
+    """Hybrid pass partitions DBNet boxes into speech bubbles vs non-SFX residual prose clusters."""
+    from unittest.mock import patch
+
+    import numpy as np
+
+    from src.backend.engines.local.ocr.rapid_ocr import RapidOCRAdapter
+
+    adapter = RapidOCRAdapter(rapidocr_engine=None)
+    router = OCRRouter(rapid_ocr=adapter)
+
+    work_items = [make_dummy_work_item(100, 100, 300, 400)]
+    sfx_boxes = [(400, 100, 550, 300)]  # Overlaps SFX quad below
+
+    # 3 quads on a 1000x1000 page:
+    # q_bubble: inside bubble (x=150..350, y=150..200)
+    # q_sfx: overlaps sfx_box (x=120..280, y=420..520) -> MUST be excluded!
+    # q_prose: outside bubbles and SFX (x=500..900, y=700..735) -> becomes residual ParagraphCluster!
+    q_bubble = np.array([[150, 150], [350, 150], [350, 200], [150, 200]], dtype=np.float32)
+    q_sfx = np.array([[120, 420], [280, 420], [280, 520], [120, 520]], dtype=np.float32)
+    q_prose = np.array([[500, 700], [900, 700], [900, 735], [500, 735]], dtype=np.float32)
+
+    with (
+        patch.object(adapter, "detect_text_boxes", return_value=[q_bubble, q_sfx, q_prose]),
+        patch.object(adapter, "crop_quad", side_effect=lambda img, q: np.zeros((32, 128, 3), dtype=np.uint8)),
+        patch.object(
+            adapter,
+            "recognize_crops",
+            return_value=[("大丈夫ですか？", 0.99), ("これは地の文です。", 0.96)],
+        ) as mock_rec,
+    ):
+        result = await router.recognize_hybrid_page(
+            image_np=Image.new("RGB", (1000, 1000), color="white"),
+            work_items=work_items,
+            sfx_boxes=sfx_boxes,
+            image_width=1000,
+            image_height=1000,
+            chapter_id="hybrid_ch1",
+        )
+
+    assert mock_rec.call_count == 1
+    assert mock_rec.call_args.kwargs.get("use_korean") is False
+    assert result.bubble_texts == ["大丈夫ですか？"]
+    assert len(result.residual_clusters) == 1
+    assert result.residual_clusters[0].text == "これは地の文です。"
+    assert result.detected_source_lang == "ja"
+    assert router.get_cached_model("hybrid_ch1") == "rapidocr"
+
+
+@pytest.mark.asyncio
+async def test_recognize_hybrid_page_auto_korean_fallback_and_chapter_cache() -> None:
+    """Low-confidence non-Kana output automatically retries Korean recognizer reusing crops and caches 'ko'."""
+    from unittest.mock import patch
+
+    import numpy as np
+
+    from src.backend.engines.local.ocr.rapid_ocr import RapidOCRAdapter
+
+    adapter = RapidOCRAdapter(rapidocr_engine=None)
+    router = OCRRouter(rapid_ocr=adapter)
+    work_items = [make_dummy_work_item(100, 100, 300, 400)]
+    q_bubble = np.array([[150, 150], [350, 150], [350, 200], [150, 200]], dtype=np.float32)
+
+    crop_calls = 0
+
+    def counting_crop(_img: Any, _q: Any) -> np.ndarray[Any, Any]:
+        nonlocal crop_calls
+        crop_calls += 1
+        return np.zeros((32, 128, 3), dtype=np.uint8)
+
+    rec_calls: list[bool] = []
+
+    def staged_recognize(crops: list[Any], use_korean: bool = False) -> list[tuple[str, float]]:
+        rec_calls.append(use_korean)
+        if not use_korean:
+            return [("garbage", 0.42)]
+        return [("안녕하세요!", 0.96)]
+
+    img = Image.new("RGB", (1000, 1000), color="white")
+    with (
+        patch.object(adapter, "detect_text_boxes", return_value=[q_bubble]),
+        patch.object(adapter, "crop_quad", side_effect=counting_crop),
+        patch.object(adapter, "recognize_crops", side_effect=staged_recognize),
+    ):
+        # Page 1: runs PP-OCRv6, sees low confidence (0.42) + no Kana -> retries Korean on same crops!
+        res1 = await router.recognize_hybrid_page(
+            image_np=img,
+            work_items=work_items,
+            sfx_boxes=[],
+            image_width=1000,
+            image_height=1000,
+            chapter_id="solo_leveling_ch1",
+        )
+        assert res1.bubble_texts == ["안녕하세요!"]
+        assert res1.detected_source_lang == "ko"
+        assert res1.ocr_engine_used == "rapidocr-ko"
+        assert rec_calls == [False, True]
+        assert crop_calls == 1  # Cropped only ONCE!
+        assert router.get_cached_model("solo_leveling_ch1") == "ko"
+
+        # Page 2: Chapter cache hits 'ko' directly on first call!
+        res2 = await router.recognize_hybrid_page(
+            image_np=img,
+            work_items=work_items,
+            sfx_boxes=[],
+            image_width=1000,
+            image_height=1000,
+            chapter_id="solo_leveling_ch1",
+        )
+        assert res2.bubble_texts == ["안녕하세요!"]
+        assert rec_calls == [False, True, True]

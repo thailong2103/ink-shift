@@ -51,6 +51,23 @@ class DetectedBubble:
     confidence: float = 1.0
 
 
+@dataclass(frozen=True)
+class PageLayoutDetections:
+    """Complete unified layout detections emitted by YOLO11s-seg for hybrid routing.
+
+    Attributes:
+        bubbles: Ordered speech bubbles with curved polygon contours.
+        panels: Manga panel bounding regions in [0, 1000] space.
+        sfx_boxes: Non-dialogue sound-effect regions excluded from residual OCR prose clustering.
+        orphan_texts: YOLO text candidates whose center fell outside every speech bubble.
+    """
+
+    bubbles: list[DetectedBubble]
+    panels: list[DetectedPanel]
+    sfx_boxes: list[tuple[int, int, int, int]] = field(default_factory=list)
+    orphan_texts: list[DetectedText] = field(default_factory=list)
+
+
 @runtime_checkable
 class BaseBubbleDetector(Protocol):
     """Protocol for comic speech bubble detection models (YOLO11s-seg)."""

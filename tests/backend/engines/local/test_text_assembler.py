@@ -5,6 +5,7 @@ from __future__ import annotations
 from src.backend.engines.local.ocr.text_assembler import (
     ParagraphCluster,
     assemble_comic_lines,
+    clean_cjk_text,
     clean_japanese_text,
     cluster_lines_to_paragraphs,
 )
@@ -136,3 +137,94 @@ def test_cluster_lines_japanese_text_normalization() -> None:
     assert len(clusters) == 1
     assert clusters[0].text == "憲法の前文は、「日本国民は」で始まる。"
 
+
+
+# ---------------------------------------------------------------------------
+# Bi-Directional Geometry, Furigana & Square CJK Tests (Phase 46 / ADR-019)
+# ---------------------------------------------------------------------------
+
+
+def test_clean_cjk_text_chinese_and_japanese() -> None:
+    """clean_cjk_text strips inter-character spaces in both Chinese and Japanese."""
+    assert clean_cjk_text("你 好 世 界 ！") == "你好世界！"
+    assert clean_cjk_text("こ ん に ち は") == "こんにちは"
+    assert clean_cjk_text("这是 Apple Pro 测 试") == "这是 Apple Pro 测试"
+
+
+def test_classify_box_orientation() -> None:
+    """classify_box_orientation detects vertical, horizontal, and square quads."""
+    from src.backend.engines.local.ocr.text_assembler import classify_box_orientation
+
+    assert classify_box_orientation([[0, 0], [30, 0], [30, 120], [0, 120]]) == "vertical"
+    assert classify_box_orientation([[0, 0], [180, 0], [180, 30], [0, 30]]) == "horizontal"
+    assert classify_box_orientation([[0, 0], [50, 0], [50, 50], [0, 50]]) == "square"
+
+
+def test_filter_furigana_boxes_removes_thin_ruby_right_of_column() -> None:
+    """Thin Ruby strips immediately right of vertical main columns must be filtered out."""
+    from src.backend.engines.local.ocr.text_assembler import filter_furigana_boxes, parse_ocr_entry
+
+    col1 = parse_ocr_entry([[100, 10], [140, 10], [140, 200], [100, 200]], "漢字本文", 0.99)
+    col2 = parse_ocr_entry([[40, 10], [80, 10], [80, 200], [40, 200]], "次の列だ", 0.99)
+    ruby = parse_ocr_entry([[144, 20], [156, 20], [156, 120], [144, 120]], "かんじ", 0.90)
+    assert col1 and col2 and ruby
+
+    filtered = filter_furigana_boxes([col1, ruby, col2])
+    assert [b["text"] for b in filtered] == ["漢字本文", "次の列だ"]
+
+
+def test_order_bubble_lines_bidirectional_vertical_rtl() -> None:
+    """Vertical columns inside a bubble must read Right-to-Left, Top-to-Bottom."""
+    from src.backend.engines.local.ocr.text_assembler import order_bubble_lines_bidirectional, parse_ocr_entry
+
+    right_col = parse_ocr_entry([[120, 20], [155, 20], [155, 180], [120, 180]], "右の列", 0.99)
+    left_col = parse_ocr_entry([[60, 20], [95, 20], [95, 180], [60, 180]], "左の列", 0.99)
+    assert right_col and left_col
+
+    text, direction = order_bubble_lines_bidirectional([left_col, right_col])
+    assert direction == "vertical"
+    assert text == "右の列左の列"
+
+
+def test_is_ambiguous_square_cjk_bubble() -> None:
+    """Detects tight 3x3 Chinese grid mis-split on vertically oriented manga pages."""
+    from src.backend.engines.local.ocr.text_assembler import is_ambiguous_square_cjk_bubble, parse_ocr_entry
+
+    rows = [
+        parse_ocr_entry([[100, 100], [230, 100], [230, 136], [100, 136]], "救别你", 0.7),
+        parse_ocr_entry([[100, 144], [230, 144], [230, 180], [100, 180]], "命过是", 0.7),
+        parse_ocr_entry([[100, 188], [230, 188], [230, 224], [100, 224]], "啊来谁", 0.7),
+    ]
+    clean_rows = [r for r in rows if r is not None]
+    assert is_ambiguous_square_cjk_bubble(clean_rows, page_dominant_vertical=True) is True
+    assert is_ambiguous_square_cjk_bubble(clean_rows, page_dominant_vertical=False) is False
+
+    # Pure English lines must NOT trigger Chinese 3x3 guard even on square bbox
+    en_rows = [
+        parse_ocr_entry([[100, 100], [230, 100], [230, 136], [100, 136]], "WAIT", 0.99),
+        parse_ocr_entry([[100, 144], [230, 144], [230, 180], [100, 180]], "HERE", 0.99),
+    ]
+    assert is_ambiguous_square_cjk_bubble([r for r in en_rows if r is not None], page_dominant_vertical=True) is False
+
+
+def test_cluster_lines_bidirectional_mixed_vertical_and_horizontal() -> None:
+    """Mixed vertical narration columns and horizontal footnote paragraphs cluster independently."""
+    from src.backend.engines.local.ocr.text_assembler import cluster_lines_bidirectional
+
+    raw_lines = [
+        # Vertical RTL narration block on right side
+        [[[850.0, 100.0], [890.0, 100.0], [890.0, 400.0], [850.0, 400.0]], "今日は", 0.99],
+        [[[790.0, 100.0], [830.0, 100.0], [830.0, 400.0], [790.0, 400.0]], "いい天気", 0.99],
+        # Horizontal English footnote at bottom
+        [[[100.0, 800.0], [500.0, 800.0], [500.0, 825.0], [100.0, 825.0]], "Editor note line 1", 0.98],
+        [[[100.0, 840.0], [450.0, 840.0], [450.0, 865.0], [100.0, 865.0]], "Editor note line 2", 0.97],
+    ]
+    clusters = cluster_lines_bidirectional(raw_lines, image_width=1000, image_height=1000)
+    assert len(clusters) == 2
+
+    vert = [c for c in clusters if c.direction == "vertical"]
+    horiz = [c for c in clusters if c.direction == "horizontal"]
+    assert len(vert) == 1
+    assert len(horiz) == 1
+    assert vert[0].text == "今日はいい天気"
+    assert horiz[0].text == "Editor note line 1 Editor note line 2"

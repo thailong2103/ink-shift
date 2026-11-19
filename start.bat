@@ -30,7 +30,7 @@ set "ACTIVE_PYTHON="
 
 :: Step 2a. Check if local .venv exists
 if exist ".venv\Scripts\python.exe" (
-    ".venv\Scripts\python.exe" -c "import fastapi, uvicorn, aiosqlite, onnxruntime, cv2, deep_translator, rapidocr_onnxruntime" >nul 2>&1
+    ".venv\Scripts\python.exe" -c "import fastapi, uvicorn, aiosqlite, onnxruntime, cv2, deep_translator, rapidocr" >nul 2>&1
     if not errorlevel 1 (
         set "ACTIVE_PYTHON=%~dp0.venv\Scripts\python.exe"
         echo [InkShift] Using ready local .venv environment.

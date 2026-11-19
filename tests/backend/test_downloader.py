@@ -126,30 +126,36 @@ def test_ensure_ocr_model_files_unsupported_language() -> None:
 
 
 def test_ensure_ocr_model_files_already_exists(tmp_path: Path) -> None:
-    """If specialized model already exists with valid size, returns path without downloading."""
-    model_file = tmp_path / "japan_PP-OCRv3_rec_infer.onnx"
-    # Write enough dummy bytes (>9MB)
-    model_file.write_bytes(b"0" * (9_000_000 + 10))
+    """If OCR model already exists with valid size, returns path without downloading."""
+    model_file = tmp_path / "PP-OCRv6_rec_medium.onnx"
+    # Write enough dummy bytes (>72MB threshold)
+    model_file.write_bytes(b"0" * (72_000_000 + 10))
 
     with patch("src.backend.detection.downloader.ensure_model_file") as mock_ensure:
-        result = ensure_ocr_model_files("ja", dest_path=model_file)
+        result = ensure_ocr_model_files("rec", dest_path=model_file)
         assert result == model_file
         mock_ensure.assert_not_called()
 
 
 def test_ensure_ocr_model_files_downloads_when_missing(tmp_path: Path) -> None:
     """Missing model triggers download and returns resolved path."""
-    model_file = tmp_path / "japan_PP-OCRv3_rec_infer.onnx"
-    with patch("src.backend.detection.downloader.ensure_model_file", return_value=model_file) as mock_ensure:
-        result = ensure_ocr_model_files("ja", dest_path=model_file, auto_download=True)
-        assert result == model_file
+    det_file = tmp_path / "PP-OCRv6_det_medium.onnx"
+    with patch("src.backend.detection.downloader.ensure_model_file", return_value=det_file) as mock_ensure:
+        result = ensure_ocr_model_files("det", dest_path=det_file, auto_download=True)
+        assert result == det_file
         mock_ensure.assert_called_once()
+
+    ko_file = tmp_path / "korean_PP-OCRv5_rec_mobile.onnx"
+    with patch("src.backend.detection.downloader.ensure_model_file", return_value=ko_file) as mock_ensure_ko:
+        result_ko = ensure_ocr_model_files("ko", dest_path=ko_file, auto_download=True)
+        assert result_ko == ko_file
+        mock_ensure_ko.assert_called_once()
 
 
 def test_ensure_ocr_model_files_offline_fallback(tmp_path: Path) -> None:
     """When download fails or offline, returns None gracefully without crashing."""
-    model_file = tmp_path / "japan_PP-OCRv3_rec_infer.onnx"
+    model_file = tmp_path / "korean_PP-OCRv5_rec_mobile.onnx"
     with patch("src.backend.detection.downloader.ensure_model_file", side_effect=RuntimeError("Network offline")):
-        result = ensure_ocr_model_files("ja", dest_path=model_file, auto_download=True)
+        result = ensure_ocr_model_files("ko", dest_path=model_file, auto_download=True)
         assert result is None
 

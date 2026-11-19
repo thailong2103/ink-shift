@@ -57,6 +57,8 @@ class Settings:
         inkshift_local_default_translator: str | None = None,
         inkshift_local_detector_model_path: str | None = None,
         inkshift_local_manga_ocr_model_path: str | None = None,
+        inkshift_local_ocr_det_model_path: str | None = None,
+        inkshift_local_ocr_rec_model_path: str | None = None,
         inkshift_local_ocr_ja_model_path: str | None = None,
         inkshift_local_ocr_ko_model_path: str | None = None,
         inkshift_local_ocr_ja_dict_path: str | None = None,
@@ -194,12 +196,20 @@ class Settings:
             if inkshift_local_manga_ocr_model_path is not None
             else os.getenv("INKSHIFT_LOCAL_MANGA_OCR_MODEL_PATH", "")
         )
-        self.inkshift_local_ocr_ja_model_path: str = (
-            inkshift_local_ocr_ja_model_path
-            if inkshift_local_ocr_ja_model_path is not None
+        self.inkshift_local_ocr_det_model_path: str = (
+            inkshift_local_ocr_det_model_path
+            if inkshift_local_ocr_det_model_path is not None
             else os.getenv(
-                "INKSHIFT_LOCAL_OCR_JA_MODEL_PATH",
-                os.path.join(self.inkshift_local_model_dir, "japan_PP-OCRv3_rec_infer.onnx"),
+                "INKSHIFT_LOCAL_OCR_DET_MODEL_PATH",
+                os.path.join(self.inkshift_local_model_dir, "PP-OCRv6_det_medium.onnx"),
+            )
+        )
+        self.inkshift_local_ocr_rec_model_path: str = (
+            inkshift_local_ocr_rec_model_path
+            if inkshift_local_ocr_rec_model_path is not None
+            else os.getenv(
+                "INKSHIFT_LOCAL_OCR_REC_MODEL_PATH",
+                os.path.join(self.inkshift_local_model_dir, "PP-OCRv6_rec_medium.onnx"),
             )
         )
         self.inkshift_local_ocr_ko_model_path: str = (
@@ -207,24 +217,24 @@ class Settings:
             if inkshift_local_ocr_ko_model_path is not None
             else os.getenv(
                 "INKSHIFT_LOCAL_OCR_KO_MODEL_PATH",
-                os.path.join(self.inkshift_local_model_dir, "korean_PP-OCRv3_rec_infer.onnx"),
+                os.path.join(self.inkshift_local_model_dir, "korean_PP-OCRv5_rec_mobile.onnx"),
             )
         )
-        default_ja_dict = os.path.normpath(
-            os.path.join(os.path.dirname(__file__), "engines", "local", "ocr", "assets", "japan_dict.txt")
+        # Legacy aliases retained for backwards compatibility with existing configuration callers
+        self.inkshift_local_ocr_ja_model_path: str = (
+            inkshift_local_ocr_ja_model_path
+            if inkshift_local_ocr_ja_model_path is not None
+            else os.getenv("INKSHIFT_LOCAL_OCR_JA_MODEL_PATH", self.inkshift_local_ocr_rec_model_path)
         )
         self.inkshift_local_ocr_ja_dict_path: str = (
             inkshift_local_ocr_ja_dict_path
             if inkshift_local_ocr_ja_dict_path is not None
-            else os.getenv("INKSHIFT_LOCAL_OCR_JA_DICT_PATH", default_ja_dict)
-        )
-        default_ko_dict = os.path.normpath(
-            os.path.join(os.path.dirname(__file__), "engines", "local", "ocr", "assets", "korean_dict.txt")
+            else os.getenv("INKSHIFT_LOCAL_OCR_JA_DICT_PATH", "")
         )
         self.inkshift_local_ocr_ko_dict_path: str = (
             inkshift_local_ocr_ko_dict_path
             if inkshift_local_ocr_ko_dict_path is not None
-            else os.getenv("INKSHIFT_LOCAL_OCR_KO_DICT_PATH", default_ko_dict)
+            else os.getenv("INKSHIFT_LOCAL_OCR_KO_DICT_PATH", "")
         )
         self.inkshift_auto_download_models: bool = (
             inkshift_auto_download_models

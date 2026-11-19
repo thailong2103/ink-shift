@@ -373,26 +373,48 @@ def extract_rdp_polygon(
     return smooth_polygon_chaikin(polygon_points, iterations=2)
 
 
-def assign_child_texts_to_bubbles(
+def _compare_texts_rtl(t1: DetectedText, t2: DetectedText) -> int:
+    """Compare two child DetectedText boxes in Top-to-Bottom, Right-to-Left order."""
+    y1_min, x1_min, y1_max, x1_max = t1.box_2d
+    y2_min, x2_min, y2_max, x2_max = t2.box_2d
+
+    cy1 = (y1_min + y1_max) / 2.0
+    cy2 = (y2_min + y2_max) / 2.0
+    cx1 = (x1_min + x1_max) / 2.0
+    cx2 = (x2_min + x2_max) / 2.0
+
+    overlap_y = max(0, min(y1_max, y2_max) - max(y1_min, y2_min))
+    h1 = max(1, y1_max - y1_min)
+    h2 = max(1, y2_max - y2_min)
+    min_h = min(h1, h2)
+
+    same_tier = overlap_y / min_h > 0.3 and not (y1_min > cy2 or y2_min > cy1)
+    if same_tier:
+        if cx1 > cx2:
+            return -1
+        if cx1 < cx2:
+            return 1
+        return 0
+
+    if cy1 < cy2:
+        return -1
+    if cy1 > cy2:
+        return 1
+    return 0
+
+
+def assign_child_texts_with_orphans(
     bubbles: list[DetectedBubble],
     texts: list[DetectedText],
-) -> list[DetectedBubble]:
-    """Map detected child text blocks to their containing speech bubble.
+) -> tuple[list[DetectedBubble], list[DetectedText]]:
+    """Assign child text blocks to containing speech bubbles and return remaining orphans.
 
-    Synthesizes rectangular Pseudo-Bubbles for orphan texts (narration boxes, floating monologues)
-    that do not fall into any detected speech bubble.
-
-    Args:
-        bubbles: List of detected speech bubbles with canonical [0, 1000] coordinates.
-        texts: List of detected text blocks with canonical [0, 1000] coordinates.
-
-    Returns:
-        List of DetectedBubble instances updated with associated child texts and synthesized pseudo-bubbles.
+    Unlike `assign_child_texts_to_bubbles`, this helper never synthesizes pseudo-bubbles
+    so downstream unified-hybrid OCR can cluster orphan narration/prose boxes coherently.
     """
     if not texts:
-        return bubbles
+        return bubbles, []
 
-    # Map of bubble index to list of child DetectedText
     assignments: dict[int, list[DetectedText]] = {i: [] for i in range(len(bubbles))}
     orphan_texts: list[DetectedText] = []
 
@@ -417,44 +439,39 @@ def assign_child_texts_to_bubbles(
         else:
             orphan_texts.append(text)
 
-    def _compare_texts_rtl(t1: DetectedText, t2: DetectedText) -> int:
-        y1_min, x1_min, y1_max, x1_max = t1.box_2d
-        y2_min, x2_min, y2_max, x2_max = t2.box_2d
-
-        cy1 = (y1_min + y1_max) / 2.0
-        cy2 = (y2_min + y2_max) / 2.0
-        cx1 = (x1_min + x1_max) / 2.0
-        cx2 = (x2_min + x2_max) / 2.0
-
-        overlap_y = max(0, min(y1_max, y2_max) - max(y1_min, y2_min))
-        h1 = max(1, y1_max - y1_min)
-        h2 = max(1, y2_max - y2_min)
-        min_h = min(h1, h2)
-
-        same_tier = False
-        if overlap_y / min_h > 0.3 and not (y1_min > cy2 or y2_min > cy1):
-            same_tier = True
-
-        if same_tier:
-            if cx1 > cx2:
-                return -1
-            if cx1 < cx2:
-                return 1
-            return 0
-
-        if cy1 < cy2:
-            return -1
-        if cy1 > cy2:
-            return 1
-        return 0
-
-    # Reconstruct DetectedBubble instances with assigned child texts sorted in RTL reading order
     updated_bubbles: list[DetectedBubble] = []
     for idx, bubble in enumerate(bubbles):
         child_texts = sorted(assignments.get(idx, []), key=functools.cmp_to_key(_compare_texts_rtl))
         updated_bubbles.append(dataclasses.replace(bubble, texts=child_texts))
 
-    # Synthesize Pseudo-Bubbles for orphan texts (Narration boxes, floating dialogue)
+    return updated_bubbles, orphan_texts
+
+
+def assign_child_texts_to_bubbles(
+    bubbles: list[DetectedBubble],
+    texts: list[DetectedText],
+    synthesize_orphan_bubbles: bool = True,
+) -> list[DetectedBubble]:
+    """Map detected child text blocks to their containing speech bubble.
+
+    Optionally synthesizes rectangular Pseudo-Bubbles for orphan texts (narration boxes,
+    floating monologues) that do not fall into any detected speech bubble.
+
+    Args:
+        bubbles: List of detected speech bubbles with canonical [0, 1000] coordinates.
+        texts: List of detected text blocks with canonical [0, 1000] coordinates.
+        synthesize_orphan_bubbles: When True, wraps orphan texts into rectangular pseudo-bubbles.
+
+    Returns:
+        List of DetectedBubble instances updated with associated child texts and optional pseudo-bubbles.
+    """
+    if not texts:
+        return bubbles
+
+    updated_bubbles, orphan_texts = assign_child_texts_with_orphans(bubbles, texts)
+    if not synthesize_orphan_bubbles:
+        return updated_bubbles
+
     start_id = len(bubbles) + 1
     for o_idx, orphan in enumerate(orphan_texts):
         ymin, xmin, ymax, xmax = orphan.box_2d
